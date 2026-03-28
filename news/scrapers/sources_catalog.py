@@ -32,8 +32,9 @@ DUNYA_LISTING_URLS = [
 ]
 
 # --- RSS / Atom (source: rss) — merged with settings.SCRAPER_RSS_FEED_URLS ---
-# These are standard syndication feeds (not scraped HTML homepages). Remove any feed
-# that returns errors; respect each outlet’s terms of use.
+# The RSS runner **round-robins** across feeds (1st item from each feed, then 2nd…)
+# so `--limit N` spreads across outlets instead of filling from the first feed only.
+# Remove any feed that returns errors; respect each outlet’s terms of use.
 RSS_FEED_URLS: list[str] = [
     # — International & regional news (English) —
     "https://feeds.bbci.co.uk/news/world/rss.xml",
@@ -54,22 +55,25 @@ RSS_FEED_URLS: list[str] = [
 ]
 
 # --- Config-driven sites (source: generic_sites) — merged with settings + JSON ---
-# Use **enabled: False** until `article_href_regex` and `selectors` are tested.
+# Set **enabled: False** to skip a site without removing its config.
+# **site_display_name** — shown in MongoDB `extra.site_display_name` (which outlet / website).
 # `fallback_generic: true` helps when selectors drift.
 GENERIC_SITES: list[dict] = [
     {
         "key": "express_tribune",
-        "enabled": False,
+        "enabled": True,
         "source_key": "generic_express_tribune",
+        "site_display_name": "Express Tribune",
         "base_url": "https://tribune.com.pk",
         "listing_urls": [
             "https://tribune.com.pk/latest/",
         ],
-        "article_href_regex": r"https://tribune\.com\.pk/story/\d+/",
-        "article_link_css": "article h2 a, .latest-news-section a",
+        # Match story URLs; strip trailing slash optional
+        "article_href_regex": r"https://(www\.)?tribune\.com\.pk/story/\d+",
         "selectors": {
             "title": "h1",
-            "body": "div.clearfix.story-content, article .story-detail",
+            # `.story-content` is often an empty wrapper; story text lives in `.express-parent-div`
+            "body": "div.express-parent-div, .story-content .express-parent-div, .story-content, article, main",
             "published": "time",
             "published_attr": "datetime",
             "summary": "meta[property='og:description']",
@@ -80,34 +84,41 @@ GENERIC_SITES: list[dict] = [
     },
     {
         "key": "the_news_pk",
-        "enabled": False,
+        "enabled": True,
         "source_key": "generic_the_news_pk",
+        "site_display_name": "The News International",
         "base_url": "https://www.thenews.com.pk",
         "listing_urls": [
             "https://www.thenews.com.pk/latest/category/national",
         ],
-        "article_href_regex": r"https://www\.thenews\.com\.pk/\d{2}/\d{2}/\d{4}/",
+        # Current site uses /latest/<numeric-id>-slug (not only /print/ or date paths).
+        "article_href_regex": r"https://www\.thenews\.com\.pk/latest/\d+|https://www\.thenews\.com\.pk/(print|article)/\d+|https://www\.thenews\.com\.pk/\d{2}/\d{2}/\d{4}/",
         "selectors": {
-            "title": "h1.detail-heading",
-            "body": "div.detail-desc",
+            "title": "h1",
+            "body": ".story-detail, article, main, .detail-desc",
             "summary": "meta[property='og:description']",
             "image": "meta[property='og:image']",
+            # Redundant with JSON-LD backfill in extract_site_config; helps if ld is absent.
+            "published": "meta[property='article:published_time']",
         },
         "fallback_generic": True,
         "max_per_site": 15,
     },
     {
         "key": "geo_news_en",
-        "enabled": False,
+        "enabled": True,
         "source_key": "generic_geo_news_en",
+        "site_display_name": "Geo News",
         "base_url": "https://www.geo.tv",
+        # `/category/english-news` returns empty HTML to non-browser clients (SPA shell).
+        # Homepage serves full markup with `/latest/<id>-slug` story links.
         "listing_urls": [
-            "https://www.geo.tv/category/english-news",
+            "https://www.geo.tv/",
         ],
-        "article_href_regex": r"https://www\.geo\.tv/latest/\d+",
+        "article_href_regex": r"https://(www\.)?geo\.tv/latest/\d+",
         "selectors": {
             "title": "h1",
-            "body": "article, .content-area",
+            "body": ".detail-body, .content-area, article, main",
             "summary": "meta[property='og:description']",
             "image": "meta[property='og:image']",
         },
@@ -118,6 +129,7 @@ GENERIC_SITES: list[dict] = [
         "key": "medium_publication_template",
         "enabled": False,
         "source_key": "generic_blog_template",
+        "site_display_name": "Medium",
         "base_url": "https://medium.com",
         "listing_urls": [],
         "article_href_regex": r"https://medium\.com/@[^/]+/[\w-]+",

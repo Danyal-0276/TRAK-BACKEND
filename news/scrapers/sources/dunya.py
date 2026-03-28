@@ -13,6 +13,7 @@ from news.scrapers.document import build_article_document
 from news.scrapers.extract.dunya import extract_dunya
 from news.scrapers import robots as robots_util
 from news.scrapers import storage
+from news.scrapers.site_key import source_key_for_article_url
 from news.scrapers.sources_catalog import DUNYA_BASE_URL as BASE
 from news.scrapers.sources_catalog import DUNYA_LISTING_URLS as LISTING_URLS
 
@@ -79,11 +80,15 @@ def run(client: PoliteHttpClient, *, limit: int = 30) -> dict:
                 continue
             doc = build_article_document(
                 canonical_url=url,
-                source_key="dunya",
+                source_key=source_key_for_article_url(url),
                 extracted=extracted,
                 http_status=ar.status_code,
                 content_type=ar.headers.get("content-type", ""),
-                extra={"listing_url": listing, "robots_allowed": True},
+                extra={
+                    "listing_url": listing,
+                    "ingestion_channel": "dunya_listings",
+                    "robots_allowed": True,
+                },
                 raw_html=body if settings.SCRAPER_STORE_RAW_HTML else None,
             )
             ok = storage.insert_raw_if_new(doc)

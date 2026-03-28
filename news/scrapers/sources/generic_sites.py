@@ -22,8 +22,11 @@ Example (settings.py or JSON list):
             "summary": "meta[property='og:description']",
             "image": "meta[property='og:image']",
         },
-        "fallback_generic": true
+        "fallback_generic": true,
+        "site_display_name": "My Site Name"
     }
+
+Use **site_display_name** for the label shown in DB/UI (which outlet the story came from).
 """
 
 from __future__ import annotations
@@ -41,7 +44,16 @@ from news.scrapers.document import build_article_document
 from news.scrapers.extract.site_config import extract_site_config
 from news.scrapers import robots as robots_util
 from news.scrapers import storage
+from news.scrapers.site_key import hostname_from_url, site_display_name_for_generic
 from news.scrapers.sources_catalog import GENERIC_SITES as CATALOG_GENERIC_SITES
+
+
+def _get(client: PoliteHttpClient, url: str):
+    """GET with curl_cffi; return None on DNS/timeout/connection errors (do not abort the run)."""
+    try:
+        return client.get(url)
+    except Exception:
+        return None
 
 
 def _load_site_configs() -> list[dict]:
@@ -119,41 +131,46 @@ def run(client: PoliteHttpClient, *, limit: int = 30) -> dict:
     inserted = 0
     skipped = 0
 
+    # Each enabled site gets up to `limit` inserts (same as other sources), not one shared
+    # budget that only the first site could use.
     for cfg in configs:
-        if inserted >= limit:
-            break
         if cfg.get("enabled") is False:
             continue
         key = (cfg.get("key") or "site").strip() or "site"
         source_key = cfg.get("source_key") or f"generic_{key}"
-        per_site_limit = int(cfg.get("max_per_site") or limit)
+        max_cfg = int(cfg.get("max_per_site") or limit)
+        site_cap = min(max_cfg, limit)
+        site_inserted = 0
 
         for listing in cfg.get("listing_urls") or []:
-            if inserted >= limit:
+            if site_inserted >= site_cap:
                 break
             listing = listing.strip()
             if not listing:
                 continue
             if not robots_util.allowed(listing, ua):
                 continue
-            lr = client.get(listing)
-            if lr.status_code != 200:
+            lr = _get(client, listing)
+            if lr is None or lr.status_code != 200:
+                skipped += 1
                 continue
             urls = discover_article_urls(lr.text, listing, cfg)
-            n_site = 0
             for url in urls:
-                if inserted >= limit or n_site >= per_site_limit:
+                if site_inserted >= site_cap:
                     break
                 if storage.exists_url(url):
                     skipped += 1
                     continue
                 if not robots_util.allowed(url, ua):
+                    skipped += 1
                     continue
-                ar = client.get(url)
-                if ar.status_code != 200:
+                ar = _get(client, url)
+                if ar is None or ar.status_code != 200:
+                    skipped += 1
                     continue
                 body = ar.text
                 if len(body.encode("utf-8")) > settings.SCRAPER_MAX_HTML_BYTES:
+                    skipped += 1
                     continue
                 extracted = extract_site_config(body, url, cfg)
                 if not extracted:
@@ -168,6 +185,11 @@ def run(client: PoliteHttpClient, *, limit: int = 30) -> dict:
                     extra={
                         "listing_url": listing,
                         "site_key": key,
+                        "site_display_name": site_display_name_for_generic(
+                            cfg, url, source_key
+                        ),
+                        "site_host": hostname_from_url(url),
+                        "ingestion_channel": "generic_sites",
                         "robots_allowed": True,
                     },
                     raw_html=body if settings.SCRAPER_STORE_RAW_HTML else None,
@@ -175,7 +197,7 @@ def run(client: PoliteHttpClient, *, limit: int = 30) -> dict:
                 ok = storage.insert_raw_if_new(doc)
                 if ok:
                     inserted += 1
-                    n_site += 1
+                    site_inserted += 1
                 else:
                     skipped += 1
 

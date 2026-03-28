@@ -12,16 +12,19 @@ _failed_hosts: set[str] = set()
 
 def _fetch_robots_body(robots_url: str) -> Optional[str]:
     """
-    Fallback when urllib's RobotFileParser.read() fails (TLS/CDN quirks).
-    Uses the same stack as article fetches so behaviour is consistent.
+    Fetch robots.txt with browser-like TLS (same stack as article requests).
+    Many CDNs return 403 to urllib's default client; curl_cffi usually succeeds.
     """
     try:
         from curl_cffi import requests as curl_requests
+        from django.conf import settings as dj_settings
+
+        timeout = float(getattr(dj_settings, "SCRAPER_REQUEST_TIMEOUT", 30) or 30)
 
         r = curl_requests.get(
             robots_url,
             impersonate="chrome120",
-            timeout=20,
+            timeout=timeout,
             allow_redirects=True,
         )
         if r.status_code == 200 and r.text:
@@ -29,6 +32,30 @@ def _fetch_robots_body(robots_url: str) -> Optional[str]:
     except Exception:
         pass
     return None
+
+
+def _load_robots_parser(robots_url: str) -> Optional[RobotFileParser]:
+    """Build a RobotFileParser for this host, or None if robots could not be loaded."""
+    body = _fetch_robots_body(robots_url)
+    if body:
+        rp = RobotFileParser()
+        rp.set_url(robots_url)
+        try:
+            rp.parse(body.splitlines())
+            return rp
+        except Exception:
+            pass
+
+    rp = RobotFileParser()
+    rp.set_url(robots_url)
+    try:
+        rp.read()
+    except Exception:
+        return None
+    # urllib returns HTTP 401/403 without raising; read() sets disallow_all and no rules.
+    if getattr(rp, "disallow_all", False) and not getattr(rp, "entries", None):
+        return None
+    return rp
 
 
 def allowed(url: str, user_agent: str) -> bool:
@@ -47,21 +74,8 @@ def allowed(url: str, user_agent: str) -> bool:
 
     rp = _cache.get(base)
     if rp is None:
-        rp = RobotFileParser()
-        rp.set_url(robots_url)
-        loaded = False
-        try:
-            rp.read()
-            loaded = True
-        except Exception:
-            body = _fetch_robots_body(robots_url)
-            if body:
-                try:
-                    rp.parse(body.splitlines())
-                    loaded = True
-                except Exception:
-                    loaded = False
-        if not loaded:
+        rp = _load_robots_parser(robots_url)
+        if rp is None:
             _failed_hosts.add(base)
             return False
         _cache[base] = rp

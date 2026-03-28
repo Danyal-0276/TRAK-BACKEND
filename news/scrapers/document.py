@@ -6,6 +6,8 @@ from typing import Any
 
 from django.conf import settings
 
+from news.scrapers.site_key import display_name_for_source_key
+
 
 def build_article_document(
     *,
@@ -20,6 +22,8 @@ def build_article_document(
     data = dict(extracted)
     links = data.pop("links", []) or []
     extra = {**extra, "links": links}
+    if "site_display_name" not in extra:
+        extra["site_display_name"] = display_name_for_source_key(source_key)
 
     doc: dict[str, Any] = {
         "canonical_url": canonical_url,

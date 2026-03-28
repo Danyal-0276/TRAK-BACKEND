@@ -70,7 +70,10 @@ def extract_generic(html: str, page_url: str, fallback_title: str = "") -> Optio
         soup.find("main")
         or soup.find("article")
         or soup.find(attrs={"role": "main"})
-        or soup.select_one(".post-content, .entry-content, .article-content, .content")
+        or soup.select_one(
+            ".express-parent-div, .detail-body, .story-detail, .post-content, "
+            ".entry-content, .article-content, .content"
+        )
     )
     if main:
         for tag in main.find_all(["script", "style", "iframe", "noscript", "nav", "footer"]):
