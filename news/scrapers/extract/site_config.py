@@ -8,7 +8,12 @@ from urllib.parse import urljoin, urlparse
 
 from bs4 import BeautifulSoup, Tag
 
-from news.scrapers.extract.utils import collect_links, normalize_ws, parse_published_datetime
+from news.scrapers.extract.utils import (
+    collect_links,
+    normalize_ws,
+    parse_published_datetime,
+    soup_json_ld_news_article,
+)
 from news.scrapers.extract.generic import extract_generic
 
 META_SEL = re.compile(r"^meta\s*\[\s*property\s*=\s*['\"]([^'\"]+)['\"]\s*\]$", re.I)
@@ -100,13 +105,44 @@ def extract_site_config(html: str, page_url: str, cfg: dict[str, Any]) -> Option
     pub_attr = selectors.get("published_attr")
     if pub_sel:
         kind, val = _parse_selector(pub_sel)
-        if kind == "css" and val:
+        if kind == "meta" and val:
+            raw = _pick_meta(soup, val)
+            if raw:
+                published_at = parse_published_datetime(raw)
+        elif kind == "css" and val:
             el = soup.select_one(val)
             if el:
                 if pub_attr and el.get(pub_attr):
                     published_at = parse_published_datetime(el[pub_attr])
                 else:
                     published_at = parse_published_datetime(el.get_text())
+
+    # Many outlets only expose date/author/category in JSON-LD, not in visible CSS.
+    ld = soup_json_ld_news_article(html)
+    if ld:
+        if not published_at:
+            for key in ("datePublished", "dateModified", "dateCreated"):
+                raw = ld.get(key)
+                if raw:
+                    published_at = parse_published_datetime(str(raw))
+                    if published_at:
+                        break
+        if not author_name:
+            auth = ld.get("author")
+            if isinstance(auth, dict):
+                author_name = normalize_ws(str(auth.get("name") or "")) or None
+                if auth.get("url"):
+                    author_url = str(auth["url"]).strip()
+            elif isinstance(auth, list) and auth:
+                a0 = auth[0]
+                if isinstance(a0, dict):
+                    author_name = normalize_ws(str(a0.get("name") or "")) or None
+                    if a0.get("url"):
+                        author_url = str(a0["url"]).strip()
+            elif isinstance(auth, str):
+                author_name = normalize_ws(auth)
+        if not category and ld.get("articleSection"):
+            category = normalize_ws(str(ld["articleSection"]))
 
     body_text = ""
     links: list[str] = []
@@ -121,12 +157,18 @@ def extract_site_config(html: str, page_url: str, cfg: dict[str, Any]) -> Option
     if not title:
         title = _pick_meta(soup, "og:title")
 
-    if (not body_text or not title) and cfg.get("fallback_generic", True):
+    min_body = int(cfg.get("min_body_chars") or 120)
+    body_too_short = bool(body_text) and len(body_text.strip()) < min_body
+    if (
+        (not body_text or not title or body_too_short)
+        and cfg.get("fallback_generic", True)
+    ):
         fb = extract_generic(html, page_url, fallback_title=title or "")
         if fb:
             if not title:
                 title = fb.get("title")
-            if not body_text:
+            fb_body = (fb.get("body_text") or "").strip()
+            if not body_text or len(fb_body) > len((body_text or "").strip()):
                 body_text = fb.get("body_text") or ""
             if not summary:
                 summary = fb.get("summary")

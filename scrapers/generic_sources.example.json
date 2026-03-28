@@ -2,6 +2,7 @@
   {
     "key": "example_site",
     "source_key": "generic_example_site",
+    "site_display_name": "Example News",
     "base_url": "https://example.com",
     "listing_urls": ["https://example.com/news/"],
     "article_href_regex": "https://example\\.com/\\d{4}/[\\w/-]+",
