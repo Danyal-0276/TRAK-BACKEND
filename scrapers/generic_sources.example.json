@@ -1,0 +1,22 @@
+[
+  {
+    "key": "example_site",
+    "source_key": "generic_example_site",
+    "base_url": "https://example.com",
+    "listing_urls": ["https://example.com/news/"],
+    "article_href_regex": "https://example\\.com/\\d{4}/[\\w/-]+",
+    "article_link_css": "article h2 a",
+    "max_per_site": 10,
+    "selectors": {
+      "title": "h1.post-title",
+      "body": "div.post-body",
+      "author": "a.author",
+      "author_is_link": true,
+      "published": "time[datetime]",
+      "published_attr": "datetime",
+      "summary": "meta[property='og:description']",
+      "image": "meta[property='og:image']"
+    },
+    "fallback_generic": true
+  }
+]

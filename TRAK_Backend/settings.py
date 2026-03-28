@@ -10,6 +10,7 @@ For the full list of settings and their values, see
 https://docs.djangoproject.com/en/3.2/ref/settings/
 """
 
+import os
 from pathlib import Path
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
@@ -151,3 +152,39 @@ REST_FRAMEWORK = {
 }
 
 CORS_ALLOW_ALL_ORIGINS = True  # For development purposes only
+
+# --- Raw news scrapers (pymongo collection `raw_articles` in TRAK_DB) ---
+MONGODB_URI = os.environ.get("MONGODB_URI", "mongodb://127.0.0.1:27017/")
+MONGODB_RAW_DATABASE = os.environ.get("MONGODB_RAW_DATABASE", "TRAK_DB")
+MONGODB_RAW_COLLECTION = os.environ.get("MONGODB_RAW_COLLECTION", "raw_articles")
+
+# Many news sites sit behind CDNs that block non-browser user-agents. Use a real
+# browser token plus a project suffix so traffic is identifiable.
+SCRAPER_USER_AGENT = os.environ.get(
+    "SCRAPER_USER_AGENT",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 TRAK-NewsIngest/1.0",
+)
+SCRAPER_DELAY_SECONDS = float(os.environ.get("SCRAPER_DELAY_SECONDS", "2.5"))
+SCRAPER_REQUEST_TIMEOUT = float(os.environ.get("SCRAPER_REQUEST_TIMEOUT", "30"))
+SCRAPER_MAX_HTML_BYTES = int(os.environ.get("SCRAPER_MAX_HTML_BYTES", "5_000_000"))  # 5 MB cap per page
+
+# Keep full page HTML in MongoDB in addition to extracted fields (large; default off).
+SCRAPER_STORE_RAW_HTML = os.environ.get("SCRAPER_STORE_RAW_HTML", "false").lower() in (
+    "1",
+    "true",
+    "yes",
+)
+
+# RSS feeds: merged with `news/scrapers/sources_catalog.py` → RSS_FEED_URLS (add feeds there first).
+SCRAPER_RSS_FEED_URLS = [
+    u.strip()
+    for u in os.environ.get("SCRAPER_RSS_FEED_URLS", "").split(",")
+    if u.strip()
+]
+
+# Generic CSS-based sites: merged with `sources_catalog.py` → GENERIC_SITES.
+SCRAPER_GENERIC_SOURCES = []
+
+# Path to JSON file (list of site configs, or {"sites": [...]}) relative to BASE_DIR if not absolute.
+SCRAPER_GENERIC_SOURCES_JSON = os.environ.get("SCRAPER_GENERIC_SOURCES_JSON", "").strip() or None
