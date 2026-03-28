@@ -26,7 +26,7 @@ class Command(BaseCommand):
             nargs="+",
             choices=list(SOURCE_MODULES.keys()),
             default=["dawn", "dunya"],
-            help="dawn/dunya/rss/generic_sites (generic_sites needs SCRAPER_GENERIC_SOURCES or JSON).",
+            help="dawn | dunya | rss | generic_sites (see news/scrapers/sources_catalog.py).",
         )
         parser.add_argument(
             "--limit",
@@ -38,15 +38,18 @@ class Command(BaseCommand):
     def handle(self, *args, **options):
         storage.ensure_indexes()
         client = PoliteHttpClient()
-        names = options["sources"]
-        limit = max(1, options["limit"])
+        try:
+            names = options["sources"]
+            limit = max(1, options["limit"])
 
-        self.stdout.write(
-            "Using robots.txt checks + delay between requests. "
-            "Set SCRAPER_USER_AGENT to a reachable contact if you deploy."
-        )
+            self.stdout.write(
+                "Using robots.txt checks + delay between requests. "
+                "Set SCRAPER_USER_AGENT to a reachable contact if you deploy."
+            )
 
-        for name in names:
-            mod = SOURCE_MODULES[name]
-            stats = mod.run(client, limit=limit)
-            self.stdout.write(self.style.SUCCESS(str(stats)))
+            for name in names:
+                mod = SOURCE_MODULES[name]
+                stats = mod.run(client, limit=limit)
+                self.stdout.write(self.style.SUCCESS(str(stats)))
+        finally:
+            client.close()

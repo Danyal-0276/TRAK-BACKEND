@@ -122,6 +122,8 @@ def run(client: PoliteHttpClient, *, limit: int = 30) -> dict:
     for cfg in configs:
         if inserted >= limit:
             break
+        if cfg.get("enabled") is False:
+            continue
         key = (cfg.get("key") or "site").strip() or "site"
         source_key = cfg.get("source_key") or f"generic_{key}"
         per_site_limit = int(cfg.get("max_per_site") or limit)

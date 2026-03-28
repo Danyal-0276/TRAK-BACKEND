@@ -78,6 +78,7 @@ def run(client: PoliteHttpClient, *, limit: int = 30) -> dict:
                 content_type=r.headers.get("content-type", ""),
                 extra={
                     "feed_url": feed_url,
+                    "entry_title": (title_hint or "")[:500],
                     "robots_allowed": True,
                 },
                 raw_html=body if settings.SCRAPER_STORE_RAW_HTML else None,
