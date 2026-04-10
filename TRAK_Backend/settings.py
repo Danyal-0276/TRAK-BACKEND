@@ -11,6 +11,7 @@ https://docs.djangoproject.com/en/3.2/ref/settings/
 """
 
 import os
+from datetime import timedelta
 from pathlib import Path
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
@@ -21,12 +22,34 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 # See https://docs.djangoproject.com/en/3.2/howto/deployment/checklist/
 
 # SECURITY WARNING: keep the secret key used in production secret!
-SECRET_KEY = 'django-insecure-pu50tf0wn-ug=15%$i9_^7dune*_q5wff%w&&4h6pi3!5n(7b#'
+SECRET_KEY = os.environ.get(
+    "DJANGO_SECRET_KEY",
+    "django-insecure-pu50tf0wn-ug=15%$i9_^7dune*_q5wff%w&&4h6pi3!5n(7b#",
+)
 
 # SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = True
+DEBUG = os.environ.get("DJANGO_DEBUG", "True").lower() in ("1", "true", "yes")
 
-ALLOWED_HOSTS = []
+_allowed = os.environ.get("DJANGO_ALLOWED_HOSTS", "localhost,127.0.0.1").strip()
+ALLOWED_HOSTS = [h.strip() for h in _allowed.split(",") if h.strip()]
+
+AUTH_USER_MODEL = "accounts.User"
+
+# Comma-separated emails → role admin on registration.
+# Three built-in admins (Danyal, Shahroz, Abdullah) are always included; extend with ADMIN_EMAILS.
+_BUILTIN_ADMIN_EMAILS = (
+    "danyal@admin.com,shahroz@admin.com,abdullah@admin.com"
+)
+# Used by seed_default_admins only (shared initial password).
+BUILTIN_ADMIN_EMAILS_LIST = [
+    e.strip().lower() for e in _BUILTIN_ADMIN_EMAILS.split(",") if e.strip()
+]
+_extra_admin_emails = os.environ.get("ADMIN_EMAILS", "").strip()
+ADMIN_EMAILS = (
+    f"{_BUILTIN_ADMIN_EMAILS},{_extra_admin_emails}"
+    if _extra_admin_emails
+    else _BUILTIN_ADMIN_EMAILS
+)
 
 
 # Application definition
@@ -142,21 +165,87 @@ STATIC_URL = '/static/'
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
 REST_FRAMEWORK = {
-    'DEFAULT_AUTHENTICATION_CLASSES': [
-        'rest_framework.authentication.TokenAuthentication',
-        'rest_framework.authentication.SessionAuthentication',
+    "DEFAULT_AUTHENTICATION_CLASSES": [
+        "rest_framework_simplejwt.authentication.JWTAuthentication",
+        "rest_framework.authentication.SessionAuthentication",
     ],
-    'DEFAULT_PERMISSION_CLASSES': [
-        'rest_framework.permissions.IsAuthenticated',
-    ]
+    "DEFAULT_PERMISSION_CLASSES": [
+        "rest_framework.permissions.IsAuthenticated",
+    ],
+    "EXCEPTION_HANDLER": "TRAK_Backend.api_exceptions.custom_exception_handler",
+    "DEFAULT_THROTTLE_RATES": {
+        "register": os.environ.get("THROTTLE_REGISTER", "10/hour"),
+        "login": os.environ.get("THROTTLE_LOGIN", "30/hour"),
+        "refresh": os.environ.get("THROTTLE_REFRESH", "120/hour"),
+        "password_reset": os.environ.get("THROTTLE_PASSWORD_RESET", "5/hour"),
+    },
 }
 
-CORS_ALLOW_ALL_ORIGINS = True  # For development purposes only
+CORS_ALLOW_ALL_ORIGINS = os.environ.get(
+    "CORS_ALLOW_ALL_ORIGINS",
+    "true" if DEBUG else "false",
+).lower() in (
+    "1",
+    "true",
+    "yes",
+)
+_cors_origins = os.environ.get("CORS_ALLOWED_ORIGINS", "").strip()
+if _cors_origins:
+    CORS_ALLOW_ALL_ORIGINS = False
+    CORS_ALLOWED_ORIGINS = [o.strip() for o in _cors_origins.split(",") if o.strip()]
+
+SIMPLE_JWT = {
+    "ACCESS_TOKEN_LIFETIME": timedelta(
+        minutes=int(os.environ.get("JWT_ACCESS_MINUTES", "60"))
+    ),
+    "REFRESH_TOKEN_LIFETIME": timedelta(
+        days=int(os.environ.get("JWT_REFRESH_DAYS", "7"))
+    ),
+    "ROTATE_REFRESH_TOKENS": True,
+    "BLACKLIST_AFTER_ROTATION": False,
+}
+
+# --- Email (password reset). Dev default: print emails to console. ---
+EMAIL_BACKEND = os.environ.get(
+    "EMAIL_BACKEND",
+    "django.core.mail.backends.console.EmailBackend",
+)
+EMAIL_HOST = os.environ.get("EMAIL_HOST", "")
+EMAIL_PORT = int(os.environ.get("EMAIL_PORT", "587"))
+EMAIL_USE_TLS = os.environ.get("EMAIL_USE_TLS", "true").lower() in ("1", "true", "yes")
+EMAIL_HOST_USER = os.environ.get("EMAIL_HOST_USER", "")
+EMAIL_HOST_PASSWORD = os.environ.get("EMAIL_HOST_PASSWORD", "")
+DEFAULT_FROM_EMAIL = os.environ.get("DEFAULT_FROM_EMAIL", "TRAK <noreply@trak.local>")
+# Full URL to the web (or universal) reset screen, e.g. https://app.example.com/reset-password
+PASSWORD_RESET_FRONTEND_URL = os.environ.get(
+    "PASSWORD_RESET_FRONTEND_URL",
+    "http://127.0.0.1:5173/reset-password",
+).strip()
+
+if not DEBUG:
+    SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
+    SESSION_COOKIE_SECURE = True
+    CSRF_COOKIE_SECURE = True
+    if os.environ.get("DJANGO_SECURE_SSL_REDIRECT", "true").lower() in ("1", "true", "yes"):
+        SECURE_SSL_REDIRECT = True
+    SECURE_HSTS_SECONDS = int(os.environ.get("SECURE_HSTS_SECONDS", "31536000"))
+    SECURE_HSTS_INCLUDE_SUBDOMAINS = (
+        os.environ.get("SECURE_HSTS_INCLUDE_SUBDOMAINS", "true").lower() in ("1", "true", "yes")
+    )
+    SECURE_CONTENT_TYPE_NOSNIFF = True
+    X_FRAME_OPTIONS = "DENY"
+    SECURE_REFERRER_POLICY = os.environ.get("SECURE_REFERRER_POLICY", "same-origin")
 
 # --- Raw news scrapers (pymongo collection `raw_articles` in TRAK_DB) ---
 MONGODB_URI = os.environ.get("MONGODB_URI", "mongodb://127.0.0.1:27017/")
 MONGODB_RAW_DATABASE = os.environ.get("MONGODB_RAW_DATABASE", "TRAK_DB")
 MONGODB_RAW_COLLECTION = os.environ.get("MONGODB_RAW_COLLECTION", "raw_articles")
+MONGODB_PROCESSED_COLLECTION = os.environ.get("MONGODB_PROCESSED_COLLECTION", "processed_articles")
+MONGODB_USER_KEYWORDS_COLLECTION = os.environ.get("MONGODB_USER_KEYWORDS_COLLECTION", "user_keywords")
+
+# Optional: directory with HuggingFace-style saved model for 3-class credibility (real/fake/suspicious)
+CREDIBILITY_MODEL_PATH = os.environ.get("CREDIBILITY_MODEL_PATH", "").strip() or None
+CREDIBILITY_CONFIDENCE_THRESHOLD = float(os.environ.get("CREDIBILITY_CONFIDENCE_THRESHOLD", "0.6"))
 
 # Many news sites sit behind CDNs that block non-browser user-agents. Use a real
 # browser token plus a project suffix so traffic is identifiable.

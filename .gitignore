@@ -20,3 +20,7 @@ Thumbs.db
 # Django stuff
 db.sqlite3
 db.sqlite3-journal
+
+# Offline HF training outputs (large)
+ml_artifacts/
+*_runs/
