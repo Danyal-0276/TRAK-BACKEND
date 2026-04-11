@@ -189,3 +189,48 @@ def upsert_user_keywords(user: User, keywords: list[str]) -> dict[str, Any]:
         upsert=True,
     )
     return {"user_id": user.pk, "keywords": cleaned}
+
+
+def get_explore_feed(limit: int = 200, *, search_q: str = "") -> list[dict]:
+    """
+    Non-personalized feed for Explore: show all scraped/processed content.
+    Optional search_q narrows results across all articles.
+    """
+    q = (search_q or "").strip().lower()
+    proc = processed_collection()
+    raw_col = raw_collection()
+    out: list[dict] = []
+    cursor = proc.find().sort("processed_at", -1).limit(max(limit * 2, limit))
+    for doc in cursor:
+        raw_doc = None
+        url = doc.get("canonical_url") or doc.get("raw_canonical_url")
+        if url:
+            raw_doc = raw_col.find_one({"canonical_url": url})
+        if q:
+            hay = _doc_haystack(doc, raw_doc)
+            if q not in hay:
+                continue
+        out.append(article_to_api_dict(doc, raw_doc))
+        if len(out) >= limit:
+            return out
+
+    if len(out) < limit:
+        for raw_doc in raw_col.find().sort("fetched_at", -1).limit(limit):
+            stub = {
+                "_id": raw_doc.get("_id"),
+                "title": raw_doc.get("title"),
+                "summary": (raw_doc.get("body_text") or "")[:500],
+                "clean_text": raw_doc.get("body_text"),
+                "canonical_url": raw_doc.get("canonical_url"),
+                "source_key": raw_doc.get("source_key"),
+                "published_at": raw_doc.get("published_at"),
+                "credibility_label": None,
+            }
+            if q:
+                hay = _doc_haystack(stub, raw_doc)
+                if q not in hay:
+                    continue
+            out.append(article_to_api_dict(stub, raw_doc))
+            if len(out) >= limit:
+                break
+    return out

@@ -37,6 +37,11 @@ def user_keywords_collection() -> Collection:
     return get_db()[name]
 
 
+def chatbot_history_collection() -> Collection:
+    name = getattr(settings, "MONGODB_CHATBOT_HISTORY_COLLECTION", "chatbot_history")
+    return get_db()[name]
+
+
 def ensure_all_article_indexes() -> None:
     """Idempotent indexes for raw, processed, and user_keywords."""
     from news.scrapers import storage as raw_storage
@@ -52,3 +57,6 @@ def ensure_all_article_indexes() -> None:
 
     uk = user_keywords_collection()
     uk.create_index([("user_id", ASCENDING)], unique=True)
+
+    ch = chatbot_history_collection()
+    ch.create_index([("user_id", ASCENDING)], unique=True)

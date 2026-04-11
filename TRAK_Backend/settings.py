@@ -221,6 +221,24 @@ PASSWORD_RESET_FRONTEND_URL = os.environ.get(
     "PASSWORD_RESET_FRONTEND_URL",
     "http://127.0.0.1:5173/reset-password",
 ).strip()
+SOCIAL_AUTH_FRONTEND_URL = os.environ.get(
+    "SOCIAL_AUTH_FRONTEND_URL",
+    "http://127.0.0.1:5173/login",
+).strip()
+
+# OAuth providers
+GOOGLE_CLIENT_ID = os.environ.get("GOOGLE_CLIENT_ID", "").strip()
+GOOGLE_CLIENT_SECRET = os.environ.get("GOOGLE_CLIENT_SECRET", "").strip()
+GOOGLE_REDIRECT_URI = os.environ.get(
+    "GOOGLE_REDIRECT_URI",
+    "http://127.0.0.1:8000/api/auth/social/google/callback/",
+).strip()
+GITHUB_CLIENT_ID = os.environ.get("GITHUB_CLIENT_ID", "").strip()
+GITHUB_CLIENT_SECRET = os.environ.get("GITHUB_CLIENT_SECRET", "").strip()
+GITHUB_REDIRECT_URI = os.environ.get(
+    "GITHUB_REDIRECT_URI",
+    "http://127.0.0.1:8000/api/auth/social/github/callback/",
+).strip()
 
 if not DEBUG:
     SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
@@ -242,6 +260,7 @@ MONGODB_RAW_DATABASE = os.environ.get("MONGODB_RAW_DATABASE", "TRAK_DB")
 MONGODB_RAW_COLLECTION = os.environ.get("MONGODB_RAW_COLLECTION", "raw_articles")
 MONGODB_PROCESSED_COLLECTION = os.environ.get("MONGODB_PROCESSED_COLLECTION", "processed_articles")
 MONGODB_USER_KEYWORDS_COLLECTION = os.environ.get("MONGODB_USER_KEYWORDS_COLLECTION", "user_keywords")
+MONGODB_CHATBOT_HISTORY_COLLECTION = os.environ.get("MONGODB_CHATBOT_HISTORY_COLLECTION", "chatbot_history")
 
 # Optional: directory with HuggingFace-style saved model for 3-class credibility (real/fake/suspicious)
 CREDIBILITY_MODEL_PATH = os.environ.get("CREDIBILITY_MODEL_PATH", "").strip() or None
