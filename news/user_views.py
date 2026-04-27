@@ -1,9 +1,29 @@
+from datetime import datetime, timezone
+
 from rest_framework import permissions, status
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from news.services import article_query
-from news.mongo_db import chatbot_history_collection, raw_collection
+from news.mongo_db import (
+    bookmarks_collection,
+    chatbot_history_collection,
+    raw_collection,
+    reactions_collection,
+    user_preferences_collection,
+)
+
+
+def _parse_bool(value, field_name: str) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        v = value.strip().lower()
+        if v in {"true", "1", "yes", "on"}:
+            return True
+        if v in {"false", "0", "no", "off"}:
+            return False
+    raise ValueError(f"{field_name} must be a boolean.")
 
 
 class UserFeedView(APIView):
@@ -132,3 +152,105 @@ class ChatbotHistoryView(APIView):
         col = chatbot_history_collection()
         col.update_one({"user_id": request.user.pk}, {"$set": {"messages": []}}, upsert=True)
         return Response({"detail": "Chat history cleared."}, status=status.HTTP_200_OK)
+
+
+class UserPreferencesView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        row = user_preferences_collection().find_one({"user_id": request.user.pk}) or {}
+        return Response(
+            {
+                "notifications_enabled": bool(row.get("notifications_enabled", True)),
+                "dark_mode_enabled": bool(row.get("dark_mode_enabled", False)),
+                "personalization_enabled": bool(row.get("personalization_enabled", True)),
+            }
+        )
+
+    def patch(self, request):
+        allowed = {"notifications_enabled", "dark_mode_enabled", "personalization_enabled"}
+        updates = {}
+        for key in allowed:
+            if key in request.data:
+                try:
+                    updates[key] = _parse_bool(request.data.get(key), key)
+                except ValueError as exc:
+                    return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        if not updates:
+            return Response({"detail": "No updatable fields provided."}, status=status.HTTP_400_BAD_REQUEST)
+        user_preferences_collection().update_one({"user_id": request.user.pk}, {"$set": updates}, upsert=True)
+        row = user_preferences_collection().find_one({"user_id": request.user.pk}) or {}
+        return Response(
+            {
+                "notifications_enabled": bool(row.get("notifications_enabled", True)),
+                "dark_mode_enabled": bool(row.get("dark_mode_enabled", False)),
+                "personalization_enabled": bool(row.get("personalization_enabled", True)),
+            }
+        )
+
+
+class BookmarkListCreateView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        rows = list(bookmarks_collection().find({"user_id": request.user.pk}).sort("created_at", -1))
+        return Response(
+            {
+                "results": [
+                    {
+                        "id": str(r.get("_id")),
+                        "article_id": r.get("article_id"),
+                        "title": r.get("title"),
+                        "url": r.get("url"),
+                        "created_at": r.get("created_at"),
+                    }
+                    for r in rows
+                ]
+            }
+        )
+
+    def post(self, request):
+        article_id = str(request.data.get("article_id") or "").strip()
+        if not article_id:
+            return Response({"detail": "article_id is required."}, status=status.HTTP_400_BAD_REQUEST)
+        payload = {
+            "user_id": request.user.pk,
+            "article_id": article_id,
+            "title": str(request.data.get("title") or "").strip(),
+            "url": str(request.data.get("url") or "").strip(),
+        }
+        bookmarks_collection().update_one(
+            {"user_id": request.user.pk, "article_id": article_id},
+            {"$set": payload, "$setOnInsert": {"created_at": datetime.now(timezone.utc)}},
+            upsert=True,
+        )
+        return Response({"detail": "Bookmarked."}, status=status.HTTP_201_CREATED)
+
+
+class BookmarkDeleteView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def delete(self, request, article_id: str):
+        bookmarks_collection().delete_one({"user_id": request.user.pk, "article_id": article_id})
+        return Response({"detail": "Bookmark removed."}, status=status.HTTP_200_OK)
+
+
+class ReactionView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request):
+        article_id = str(request.data.get("article_id") or "").strip()
+        reaction = str(request.data.get("reaction") or "").strip().lower()
+        if reaction not in {"like", "dislike", "none"}:
+            return Response({"detail": "reaction must be like, dislike, or none."}, status=status.HTTP_400_BAD_REQUEST)
+        if not article_id:
+            return Response({"detail": "article_id is required."}, status=status.HTTP_400_BAD_REQUEST)
+        if reaction == "none":
+            reactions_collection().delete_one({"user_id": request.user.pk, "article_id": article_id})
+            return Response({"detail": "Reaction removed."}, status=status.HTTP_200_OK)
+        reactions_collection().update_one(
+            {"user_id": request.user.pk, "article_id": article_id},
+            {"$set": {"reaction": reaction, "updated_at": datetime.now(timezone.utc)}},
+            upsert=True,
+        )
+        return Response({"detail": "Reaction saved.", "reaction": reaction}, status=status.HTTP_200_OK)

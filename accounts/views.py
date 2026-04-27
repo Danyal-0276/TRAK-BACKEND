@@ -23,7 +23,7 @@ from rest_framework.views import APIView
 from rest_framework_simplejwt.tokens import RefreshToken
 from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
 
-from .password_reset_utils import send_password_reset_email
+from .password_reset_utils import build_reset_url, send_password_reset_email
 from .serializers import (
     CustomTokenObtainPairSerializer,
     PasswordResetConfirmSerializer,
@@ -35,6 +35,8 @@ from news.mongo_db import get_db
 
 User = get_user_model()
 logger = logging.getLogger(__name__)
+_profile_indexes_ready = False
+_follow_indexes_ready = False
 
 
 def _is_email(identity: str) -> bool:
@@ -59,7 +61,23 @@ def _social_ticket_cache_key(ticket: str) -> str:
 
 
 def _profile_collection():
-    return get_db()["user_profiles"]
+    global _profile_indexes_ready
+    col = get_db()["user_profiles"]
+    if not _profile_indexes_ready:
+        col.create_index("user_id", unique=True)
+        _profile_indexes_ready = True
+    return col
+
+
+def _follow_collection():
+    global _follow_indexes_ready
+    col = get_db()["user_follows"]
+    if not _follow_indexes_ready:
+        col.create_index([("follower_user_id", 1), ("followed_user_id", 1)], unique=True)
+        col.create_index("follower_user_id")
+        col.create_index("followed_user_id")
+        _follow_indexes_ready = True
+    return col
 
 
 def _get_profile(user_id: int) -> dict:
@@ -70,10 +88,14 @@ def _get_profile(user_id: int) -> dict:
     default = {
         "user_id": user_id,
         "full_name": "",
+        "username": "",
         "phone": "",
         "email_verified": False,
         "phone_verified": False,
         "bio": "",
+        "avatar_image": "",
+        "followers_count": 0,
+        "following_count": 0,
     }
     col.insert_one(default)
     return default
@@ -81,13 +103,23 @@ def _get_profile(user_id: int) -> dict:
 
 def _user_payload(user: User) -> dict:
     p = _get_profile(user.pk)
+    follows = _follow_collection()
+    followers_count = follows.count_documents({"followed_user_id": user.pk})
+    following_count = follows.count_documents({"follower_user_id": user.pk})
+    username = (p.get("username") or "").strip()
+    if not username:
+        username = (user.email or "").split("@")[0]
     return {
         **UserSerializer(user).data,
         "full_name": p.get("full_name") or "",
+        "username": username,
         "phone": p.get("phone") or "",
         "email_verified": bool(p.get("email_verified")),
         "phone_verified": bool(p.get("phone_verified")),
         "bio": p.get("bio") or "",
+        "avatar_image": p.get("avatar_image") or "",
+        "followers_count": int(followers_count),
+        "following_count": int(following_count),
     }
 
 
@@ -226,7 +258,7 @@ class OtpRequestView(APIView):
             {
                 "detail": f"Verification code sent to your {channel}.",
                 "channel": channel,
-                "dev_code": otp if settings.DEBUG and channel == "email" else None,
+                "dev_code": otp if settings.DEBUG else None,
             },
             status=status.HTTP_200_OK,
         )
@@ -253,13 +285,21 @@ class OtpVerifyView(APIView):
         cache.delete(cache_key)
         if channel == "email":
             email = normalized_identity
+            user = User.objects.filter(email=email).first()
+            if not user:
+                user = User.objects.create_user(email=email, password=User.objects.make_random_password())
         else:
-            # Map phone identity to a deterministic synthetic account email.
-            email = f"phone_{re.sub(r'[^0-9]', '', normalized_identity)}@phone.trak.local"
-
-        user = User.objects.filter(email=email).first()
-        if not user:
-            user = User.objects.create_user(email=email, password=User.objects.make_random_password())
+            # Login should bind to an existing profile using this phone number.
+            profile_row = _profile_collection().find_one({"phone": normalized_identity})
+            if not profile_row:
+                return Response({"detail": "No account is linked to this phone number."}, status=status.HTTP_400_BAD_REQUEST)
+            try:
+                linked_user_id = int(profile_row.get("user_id"))
+            except (TypeError, ValueError):
+                return Response({"detail": "Invalid phone profile mapping."}, status=status.HTTP_400_BAD_REQUEST)
+            user = User.objects.filter(pk=linked_user_id).first()
+            if not user:
+                return Response({"detail": "Account linked to this phone no longer exists."}, status=status.HTTP_400_BAD_REQUEST)
         profile = _get_profile(user.pk)
         if channel == "phone":
             _profile_collection().update_one(
@@ -373,6 +413,9 @@ class SocialDemoLoginView(APIView):
     throttle_scope = "login"
 
     def post(self, request):
+        enabled = getattr(settings, "ALLOW_DEMO_SOCIAL_LOGIN", False)
+        if not settings.DEBUG or not enabled:
+            return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
         provider = str(request.data.get("provider") or "").strip().lower()
         email = str(request.data.get("email") or "").strip().lower()
         if provider not in {"google", "github", "twitter"}:
@@ -406,15 +449,20 @@ class RegisterView(APIView):
         user = ser.save()
         full_name = str(request.data.get("full_name") or "").strip()
         phone = _normalize_phone(str(request.data.get("phone") or ""))
+        email_prefix = (user.email or "").split("@")[0]
         _profile_collection().update_one(
             {"user_id": user.pk},
             {
                 "$set": {
                     "full_name": full_name,
+                    "username": email_prefix,
                     "phone": phone,
                     "email_verified": False,
                     "phone_verified": False,
                     "bio": "",
+                    "avatar_image": "",
+                    "followers_count": 0,
+                    "following_count": 0,
                 }
             },
             upsert=True,
@@ -455,13 +503,21 @@ class ProfileView(APIView):
         return Response(_user_payload(request.user), status=status.HTTP_200_OK)
 
     def patch(self, request):
-        allowed = {"full_name", "phone", "bio"}
+        allowed = {"full_name", "username", "phone", "bio", "avatar_image"}
         payload = {}
         for key in allowed:
             if key in request.data:
                 val = str(request.data.get(key) or "").strip()
                 if key == "phone":
                     val = _normalize_phone(val)
+                if key == "username":
+                    if len(val) < 3:
+                        return Response({"detail": "username must be at least 3 characters."}, status=status.HTTP_400_BAD_REQUEST)
+                    if not re.match(r"^[A-Za-z0-9_]+$", val):
+                        return Response({"detail": "username may contain only letters, numbers, and underscores."}, status=status.HTTP_400_BAD_REQUEST)
+                if key == "avatar_image":
+                    if val and not (val.startswith("data:image/") or val.startswith("http://") or val.startswith("https://")):
+                        return Response({"detail": "avatar_image must be an image data URL or image URL."}, status=status.HTTP_400_BAD_REQUEST)
                 payload[key] = val
         if not payload:
             return Response({"detail": "No updatable fields provided."}, status=status.HTTP_400_BAD_REQUEST)
@@ -500,7 +556,7 @@ class VerifyContactRequestView(APIView):
         else:
             logger.info("TRAK verify OTP for phone %s is %s", identity, otp)
         return Response(
-            {"detail": "Verification code sent.", "channel": channel, "dev_code": otp if settings.DEBUG and channel == "email" else None},
+            {"detail": "Verification code sent.", "channel": channel, "dev_code": otp if settings.DEBUG else None},
             status=status.HTTP_200_OK,
         )
 
@@ -542,15 +598,19 @@ class PasswordResetRequestView(APIView):
         ser.is_valid(raise_exception=True)
         email = ser.validated_data["email"].strip().lower()
         user = User.objects.filter(email__iexact=email).first()
+        reset_preview = None
         if user is not None and user.is_active:
             try:
+                if settings.DEBUG:
+                    reset_url, uid, token = build_reset_url(user)
+                    reset_preview = {"reset_url": reset_url, "uid": uid, "token": token}
                 send_password_reset_email(user)
             except Exception:
                 logger.exception("Password reset email failed for %s", email)
-        return Response(
-            {"detail": "If an account exists for this address, password reset instructions were sent."},
-            status=status.HTTP_200_OK,
-        )
+        payload = {"detail": "If an account exists for this address, password reset instructions were sent."}
+        if reset_preview:
+            payload["debug_reset_preview"] = reset_preview
+        return Response(payload, status=status.HTTP_200_OK)
 
 
 class PasswordResetConfirmView(APIView):
@@ -582,6 +642,52 @@ class PasswordResetConfirmView(APIView):
         user.save()
         return Response(
             {"detail": "Password has been reset. You can sign in with your new password."},
+            status=status.HTTP_200_OK,
+        )
+
+
+class FollowView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request):
+        target_user_id = request.data.get("user_id")
+        try:
+            target_user_id = int(target_user_id)
+        except (TypeError, ValueError):
+            return Response({"detail": "user_id must be a valid integer."}, status=status.HTTP_400_BAD_REQUEST)
+        if target_user_id == request.user.pk:
+            return Response({"detail": "You cannot follow yourself."}, status=status.HTTP_400_BAD_REQUEST)
+        target_user = User.objects.filter(pk=target_user_id).first()
+        if not target_user:
+            return Response({"detail": "Target user not found."}, status=status.HTTP_404_NOT_FOUND)
+        _follow_collection().update_one(
+            {"follower_user_id": request.user.pk, "followed_user_id": target_user_id},
+            {"$set": {"follower_user_id": request.user.pk, "followed_user_id": target_user_id}},
+            upsert=True,
+        )
+        return Response(
+            {
+                "detail": "Followed successfully.",
+                "me": _user_payload(request.user),
+                "target": _user_payload(target_user),
+            },
+            status=status.HTTP_200_OK,
+        )
+
+    def delete(self, request):
+        target_user_id = request.data.get("user_id") or request.query_params.get("user_id")
+        try:
+            target_user_id = int(target_user_id)
+        except (TypeError, ValueError):
+            return Response({"detail": "user_id must be a valid integer."}, status=status.HTTP_400_BAD_REQUEST)
+        _follow_collection().delete_one({"follower_user_id": request.user.pk, "followed_user_id": target_user_id})
+        target_user = User.objects.filter(pk=target_user_id).first()
+        return Response(
+            {
+                "detail": "Unfollowed successfully.",
+                "me": _user_payload(request.user),
+                "target": _user_payload(target_user) if target_user else None,
+            },
             status=status.HTTP_200_OK,
         )
 

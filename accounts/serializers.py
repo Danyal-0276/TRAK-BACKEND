@@ -1,17 +1,8 @@
-from django.conf import settings
 from django.contrib.auth.password_validation import validate_password
 from rest_framework import serializers
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
 
 from .models import User
-
-
-def _admin_email_set() -> set[str]:
-    raw = getattr(settings, "ADMIN_EMAILS", "") or ""
-    if isinstance(raw, (list, set, frozenset)):
-        return {str(e).strip().lower() for e in raw if str(e).strip()}
-    return {e.strip().lower() for e in str(raw).split(",") if e.strip()}
-
 
 class RegisterSerializer(serializers.ModelSerializer):
     password = serializers.CharField(write_only=True, min_length=8)
@@ -32,8 +23,8 @@ class RegisterSerializer(serializers.ModelSerializer):
         validated_data.pop("password_confirm")
         password = validated_data.pop("password")
         email = validated_data.pop("email").strip().lower()
-        admins = _admin_email_set()
-        role = User.Role.ADMIN if email in admins else User.Role.USER
+        # Self-registration never grants admin privileges.
+        role = str(User.Role.USER)
         user = User(email=email, role=role)
         user.set_password(password)
         user.save()

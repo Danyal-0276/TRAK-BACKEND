@@ -70,6 +70,7 @@ INSTALLED_APPS = [
     'rest_framework',
     'rest_framework.authtoken',
     'corsheaders',
+    'channels',
 ]
 
 MIDDLEWARE = [
@@ -102,24 +103,27 @@ TEMPLATES = [
 ]
 
 WSGI_APPLICATION = 'TRAK_Backend.wsgi.application'
+ASGI_APPLICATION = "TRAK_Backend.asgi.application"
 
 
 # Database
 # https://docs.djangoproject.com/en/3.2/ref/settings/#databases
 
-# DATABASES = {
-#     'default': {
-#         'ENGINE': 'django.db.backends.sqlite3',
-#         'NAME': BASE_DIR / 'db.sqlite3',
-#     }
-# }
-
-DATABASES = {
-    'default': {
-        'ENGINE': 'djongo',
-        'NAME': 'TRAK_DB',  # This will be your MongoDB database name
+_db_engine = os.environ.get("DJANGO_DB_ENGINE", "sqlite3").strip().lower()
+if _db_engine == "djongo":
+    DATABASES = {
+        "default": {
+            "ENGINE": "djongo",
+            "NAME": os.environ.get("DJANGO_DB_NAME", "TRAK_DB"),
+        }
     }
-}
+else:
+    DATABASES = {
+        "default": {
+            "ENGINE": "django.db.backends.sqlite3",
+            "NAME": BASE_DIR / os.environ.get("DJANGO_SQLITE_NAME", "db.sqlite3"),
+        }
+    }
 
 # Password validation
 # https://docs.djangoproject.com/en/3.2/ref/settings/#auth-password-validators
@@ -202,8 +206,25 @@ SIMPLE_JWT = {
         days=int(os.environ.get("JWT_REFRESH_DAYS", "7"))
     ),
     "ROTATE_REFRESH_TOKENS": True,
-    "BLACKLIST_AFTER_ROTATION": False,
+    "BLACKLIST_AFTER_ROTATION": True,
 }
+
+_redis_url = os.environ.get("REDIS_URL", "").strip()
+if _redis_url:
+    CHANNEL_LAYERS = {
+        "default": {
+            "BACKEND": "channels_redis.core.RedisChannelLayer",
+            "CONFIG": {"hosts": [_redis_url]},
+        }
+    }
+else:
+    CHANNEL_LAYERS = {
+        "default": {
+            "BACKEND": "channels.layers.InMemoryChannelLayer",
+        }
+    }
+
+ALLOW_DEMO_SOCIAL_LOGIN = os.environ.get("ALLOW_DEMO_SOCIAL_LOGIN", "false").lower() in ("1", "true", "yes")
 
 # --- Email (password reset). Dev default: print emails to console. ---
 EMAIL_BACKEND = os.environ.get(
@@ -261,6 +282,11 @@ MONGODB_RAW_COLLECTION = os.environ.get("MONGODB_RAW_COLLECTION", "raw_articles"
 MONGODB_PROCESSED_COLLECTION = os.environ.get("MONGODB_PROCESSED_COLLECTION", "processed_articles")
 MONGODB_USER_KEYWORDS_COLLECTION = os.environ.get("MONGODB_USER_KEYWORDS_COLLECTION", "user_keywords")
 MONGODB_CHATBOT_HISTORY_COLLECTION = os.environ.get("MONGODB_CHATBOT_HISTORY_COLLECTION", "chatbot_history")
+MONGODB_NOTIFICATIONS_COLLECTION = os.environ.get("MONGODB_NOTIFICATIONS_COLLECTION", "notifications")
+MONGODB_DEVICE_TOKENS_COLLECTION = os.environ.get("MONGODB_DEVICE_TOKENS_COLLECTION", "device_tokens")
+MONGODB_USER_PREFERENCES_COLLECTION = os.environ.get("MONGODB_USER_PREFERENCES_COLLECTION", "user_preferences")
+MONGODB_BOOKMARKS_COLLECTION = os.environ.get("MONGODB_BOOKMARKS_COLLECTION", "bookmarks")
+MONGODB_REACTIONS_COLLECTION = os.environ.get("MONGODB_REACTIONS_COLLECTION", "reactions")
 
 # Optional: directory with HuggingFace-style saved model for 3-class credibility (real/fake/suspicious)
 CREDIBILITY_MODEL_PATH = os.environ.get("CREDIBILITY_MODEL_PATH", "").strip() or None
