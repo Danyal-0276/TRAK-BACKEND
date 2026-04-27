@@ -42,6 +42,31 @@ def chatbot_history_collection() -> Collection:
     return get_db()[name]
 
 
+def notifications_collection() -> Collection:
+    name = getattr(settings, "MONGODB_NOTIFICATIONS_COLLECTION", "notifications")
+    return get_db()[name]
+
+
+def device_tokens_collection() -> Collection:
+    name = getattr(settings, "MONGODB_DEVICE_TOKENS_COLLECTION", "device_tokens")
+    return get_db()[name]
+
+
+def user_preferences_collection() -> Collection:
+    name = getattr(settings, "MONGODB_USER_PREFERENCES_COLLECTION", "user_preferences")
+    return get_db()[name]
+
+
+def bookmarks_collection() -> Collection:
+    name = getattr(settings, "MONGODB_BOOKMARKS_COLLECTION", "bookmarks")
+    return get_db()[name]
+
+
+def reactions_collection() -> Collection:
+    name = getattr(settings, "MONGODB_REACTIONS_COLLECTION", "reactions")
+    return get_db()[name]
+
+
 def ensure_all_article_indexes() -> None:
     """Idempotent indexes for raw, processed, and user_keywords."""
     from news.scrapers import storage as raw_storage
@@ -60,3 +85,19 @@ def ensure_all_article_indexes() -> None:
 
     ch = chatbot_history_collection()
     ch.create_index([("user_id", ASCENDING)], unique=True)
+
+    notif = notifications_collection()
+    notif.create_index([("user_id", ASCENDING), ("created_at", ASCENDING)])
+    notif.create_index([("user_id", ASCENDING), ("read", ASCENDING)])
+
+    tokens = device_tokens_collection()
+    tokens.create_index([("user_id", ASCENDING), ("token", ASCENDING)], unique=True)
+
+    prefs = user_preferences_collection()
+    prefs.create_index([("user_id", ASCENDING)], unique=True)
+
+    bookmarks = bookmarks_collection()
+    bookmarks.create_index([("user_id", ASCENDING), ("article_id", ASCENDING)], unique=True)
+
+    reactions = reactions_collection()
+    reactions.create_index([("user_id", ASCENDING), ("article_id", ASCENDING)], unique=True)

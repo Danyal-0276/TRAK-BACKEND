@@ -11,12 +11,12 @@ urlpatterns = [
     path("social/<str:provider>/start/", views.SocialStartView.as_view(), name="auth-social-start"),
     path("social/<str:provider>/callback/", views.SocialCallbackView.as_view(), name="auth-social-callback"),
     path("social/complete/", views.SocialCompleteView.as_view(), name="auth-social-complete"),
-    path("social/demo-login/", views.SocialDemoLoginView.as_view(), name="auth-social-demo-login"),
     path("token/refresh/", views.ThrottledTokenRefreshView.as_view(), name="auth-token-refresh"),
     path("me/", views.MeView.as_view(), name="auth-me"),
     path("profile/", views.ProfileView.as_view(), name="auth-profile"),
     path("verify/request/", views.VerifyContactRequestView.as_view(), name="auth-verify-request"),
     path("verify/confirm/", views.VerifyContactConfirmView.as_view(), name="auth-verify-confirm"),
+    path("follow/", views.FollowView.as_view(), name="auth-follow"),
     path(
         "password-reset/",
         views.PasswordResetRequestView.as_view(),
