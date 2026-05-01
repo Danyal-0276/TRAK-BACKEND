@@ -157,6 +157,7 @@ AUTH_PASSWORD_VALIDATORS = [
 ]
 
 print("ENV DB ENGINE RAW:", os.getenv("DJANGO_DB_ENGINE"))
+print("ENV DB ENGINE RAW:", os.getenv("DJANGO_DB_ENGINE"))
 
 # Internationalization
 # https://docs.djangoproject.com/en/3.2/topics/i18n/
