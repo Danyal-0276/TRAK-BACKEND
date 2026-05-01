@@ -16,10 +16,16 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 
+
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
 
 load_dotenv(dotenv_path=os.path.join(BASE_DIR, ".env"))
+
+MONGODB_URI = os.environ.get("MONGODB_URI")
+
+if not MONGODB_URI:
+    raise Exception("MONGODB_URI is missing in .env file")
 
 
 # Quick-start development settings - unsuitable for production
@@ -120,10 +126,7 @@ if _db_engine == "djongo":
             "ENGINE": "djongo",
             "NAME": os.environ.get("DJANGO_DB_NAME", "TRAK_DB"),
             "CLIENT": {
-                "host": os.environ.get(
-                    "MONGODB_URI",
-                    "mongodb+srv://admin:%21%40%23%24%25%5E%26%2A%28@trak-db.imyrhw6.mongodb.net/TRAK_DB?retryWrites=true&w=majority"
-                )
+                 "host": os.environ.get("MONGODB_URI")
             }
         }
     }
@@ -153,6 +156,7 @@ AUTH_PASSWORD_VALIDATORS = [
     },
 ]
 
+print("ENV DB ENGINE RAW:", os.getenv("DJANGO_DB_ENGINE"))
 print("ENV DB ENGINE RAW:", os.getenv("DJANGO_DB_ENGINE"))
 
 # Internationalization

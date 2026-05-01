@@ -3,8 +3,9 @@ venv/
 .venv/
 env/
 .env
+.env.*
 
-# Byte-compiled / optimized / DLL files
+# Byte-compiled / cache
 __pycache__/
 *.py[cod]
 *$py.class
@@ -13,14 +14,24 @@ __pycache__/
 .vscode/
 .idea/
 
-# OS generated files
+# OS files
 .DS_Store
 Thumbs.db
 
-# Django stuff
+# Django DB
 db.sqlite3
 db.sqlite3-journal
 
-# Offline HF training outputs (large)
+# Django migrations cache
+*/migrations/__pycache__/
+
+# Logs
+*.log
+
+# ML / training outputs
 ml_artifacts/
 *_runs/
+
+# Static / media (if used)
+staticfiles/
+media/
