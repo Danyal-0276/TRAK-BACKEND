@@ -1,14 +1,18 @@
-# TRAK Backend — pin versions in production as needed
-Django>=3.2,<5
+Django>=4.2,<5.0
+
 djangorestframework>=3.14
 djangorestframework-simplejwt>=5.3,<6
+
 django-cors-headers
-djongo>=1.3.6
+
+djongo==1.3.7
+pymongo==3.11.4
+
+sqlparse>=0.3.1
 pytz>=2023.3
-sqlparse
-gunicorn
 dnspython
-pymongo
+
+gunicorn
 
 # Raw news ingestion (scrapers). curl_cffi mimics browser TLS (many CDNs block plain Python TLS).
 curl_cffi>=0.7.0
