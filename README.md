@@ -1,52 +1,148 @@
-# TRAK Backend (Django)
+# TRAK Backend (Django + MongoDB)
 
-Django 3.2 + **djongo** (MongoDB) for the default database (users), **pymongo** for `raw_articles`, `processed_articles`, and `user_keywords`.
+TRAK Backend powers the full intelligence layer behind the TRAK platform: authentication, user personalization, news ingestion, AI processing, and API delivery for mobile/web clients.
 
-## Setup
+## What This Project Is For
+
+This repository exists to provide a complete data and intelligence pipeline for trustworthy, personalized news delivery. It handles:
+
+- User identity and role management (including admin assignment logic)
+- JWT-based API authentication and authorization
+- Raw news ingestion from scrapers into MongoDB
+- AI pipeline processing for normalization, credibility scoring, summarization, and keyword extraction
+- User feed generation based on tracked topic keywords
+
+It is the operational core of TRAK.
+
+## Problem It Solves
+
+Modern news systems often fail in two ways:
+
+1. **Trust gap**: users cannot quickly assess article reliability
+2. **Relevance gap**: generic feeds do not match user interests
+
+This backend addresses both:
+
+- It evaluates ingested articles through a credibility pipeline (real/fake/suspicious)
+- It stores user keyword preferences and returns personalized feed results
+- It exposes clean API endpoints so frontend clients can serve this intelligence in real time
+
+## Core Capabilities
+
+- **Auth and user APIs**
+  - Register, login, profile bootstrap, protected user routes
+  - JWT flows using `djangorestframework-simplejwt`
+  - Role-aware controls and admin-specific endpoints
+
+- **News ingestion**
+  - Scrapers insert into `raw_articles`
+  - Articles move through pipeline states (`pending`, `processing`, `done`, `failed`)
+
+- **AI enrichment**
+  - Text normalization and processing
+  - Credibility inference with confidence threshold logic
+  - Summary/entity/topic keyword extraction
+  - Upsert into `processed_articles`
+
+- **Personalized feed**
+  - Matches user keyword sets against processed article signal fields
+  - Supports optional query narrowing for targeted retrieval
+
+## Data Model Overview
+
+Primary collections/tables involved in platform behavior:
+
+- `raw_articles`: unprocessed scraper output with pipeline status
+- `processed_articles`: enriched, scored articles ready for consumption
+- `user_keywords`: per-user tracked interests used for feed matching
+- Django auth/account models for user identities and roles
+
+The result is a clear separation between ingestion data and user-consumable intelligence.
+
+## High-Level Pipeline
+
+1. Scrapers ingest source content into `raw_articles`
+2. `run_ai_pipeline` reads pending records
+3. Pipeline computes credibility + enrichment fields
+4. Processed records are written to `processed_articles`
+5. User feed endpoints query processed data based on saved keywords
+
+This architecture enables repeatable processing and future model upgrades without redesigning client apps.
+
+## Tech Stack
+
+- **Backend framework**: Django `3.2+`
+- **API layer**: Django REST Framework
+- **Auth**: Simple JWT
+- **Database strategy**:
+  - `djongo` for default Django-compatible data paths
+  - `pymongo` for direct pipeline collections
+- **Scraping/parsing**: `curl_cffi`, `beautifulsoup4`, `feedparser`
+- **Optional ML stack**: separate requirements for training/inference workflows
+
+## Setup & Local Run
 
 ```bash
 cd Backend/TRAK_Backend
 python -m venv venv
-venv\Scripts\activate   # Windows
+venv\Scripts\activate
 pip install -r requirements.txt
-copy .env.example .env   # edit ADMIN_EMAILS, DJANGO_SECRET_KEY, MONGODB_URI
+copy .env.example .env
 python manage.py migrate
 python manage.py ensure_mongo_indexes
-python manage.py createsuperuser   # optional; email = USERNAME_FIELD
 python manage.py runserver
 ```
 
-Optional ML stack (training / GPU inference): `pip install -r requirements-ml.txt`
+Optional ML dependencies:
 
-## Important environment variables
+```bash
+pip install -r requirements-ml.txt
+```
 
-See `.env.example`. Notable:
+## Important Environment Configuration
 
-- `ADMIN_EMAILS` — comma-separated; these emails get `role=admin` on **register**.
-- `MONGODB_URI`, `MONGODB_RAW_DATABASE`
-- `CREDIBILITY_MODEL_PATH` — folder with saved HuggingFace model (optional); otherwise pipeline uses heuristic stub.
-- `CREDIBILITY_CONFIDENCE_THRESHOLD` — default `0.6`; max softmax below this → label suspicious (`2`).
-- `DJANGO_DEBUG`, `CORS_ALLOWED_ORIGINS` — tighten for production.
+Use `.env.example` as the base and define:
 
-## Management commands
+- `MONGODB_URI` and database names
+- `DJANGO_SECRET_KEY`
+- `ADMIN_EMAILS` for automatic admin-role assignment on register
+- `CORS_ALLOWED_ORIGINS` and secure settings for production
+- Model path/threshold settings for credibility inference behavior
 
-| Command | Purpose |
-|---------|---------|
-| `python manage.py ensure_mongo_indexes` | Indexes on raw / processed / user_keywords |
-| `python manage.py run_ai_pipeline --limit 20` | Process pending `raw_articles` → `processed_articles` |
-| `python manage.py scrape_raw_news` | Existing scraper (unchanged) |
+## Operational Commands
 
-## Production notes
+- `python manage.py ensure_mongo_indexes`: creates/validates Mongo indexes
+- `python manage.py scrape_raw_news`: runs ingestion stage
+- `python manage.py run_ai_pipeline --limit 20`: processes pending raw articles
 
-Set `DJANGO_DEBUG=False`, non-default `DJANGO_SECRET_KEY`, explicit `CORS_ALLOWED_ORIGINS` (default with `DEBUG=False` turns off `CORS_ALLOW_ALL_ORIGINS` unless you set it). HTTPS extras: `DJANGO_SECURE_SSL_REDIRECT`, `SECURE_HSTS_*`. Auth endpoints use scoped rate limits (`THROTTLE_*` in `.env.example`).
+## Why This Backend Matters
 
-## Default admins & diagnostics
+This service transforms unstructured, high-volume news input into structured, trustworthy, and user-specific output. It directly enables:
 
-- [README-DEFAULT-ADMINS.md](README-DEFAULT-ADMINS.md) — Danyal, Shahroz, Abdullah accounts; `seed_default_admins`, `trak_diagnostics`
-- Start **MongoDB** before `migrate` (djongo).
+- Better trust signals for end users
+- More relevant content experiences
+- Scalable expansion into richer AI features and moderation workflows
 
-## Related READMEs
+Without this layer, the frontend would only be a generic news browser. With it, TRAK becomes an intelligence-driven product.
 
-- [README-DJONGO-MIGRATIONS.md](README-DJONGO-MIGRATIONS.md) — djongo + Mongo quirks (`--fake` for `contenttypes.0002`, exit code 1 on close)
-- [README-AUTH-JWT.md](README-AUTH-JWT.md) — `/api/auth/*`, `/api/user/*`, `/api/admin/*`
-- [README-MONGO-PIPELINE.md](README-MONGO-PIPELINE.md) — document shapes & pipeline stages
+## Production Considerations
+
+- Disable debug mode and use secure secrets
+- Set strict CORS origin allowlists
+- Configure HTTPS and security headers
+- Monitor pipeline throughput and failed item retry workflows
+- Keep model artifacts versioned and compatible with inference code
+
+## Future Improvements
+
+- Better observability around pipeline latency and failure classes
+- Backfill/reprocessing commands for model upgrades
+- Queue-based worker orchestration for large-scale ingestion
+- Expanded credibility explanations for downstream clients
+
+## Related Documentation
+
+- `README-AUTH-JWT.md`
+- `README-MONGO-PIPELINE.md`
+- `README-DJONGO-MIGRATIONS.md`
+- `README-DEFAULT-ADMINS.md`
