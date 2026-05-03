@@ -6,7 +6,7 @@ Raw rows must be ``pipeline_status=pending``; scrapers set that on insert.
 Examples::
 
     python manage.py run_news_cycle
-    python manage.py run_news_cycle --sources rss dawn --scrape-limit 30 --pipeline-limit 40
+    python manage.py run_news_cycle --sources dawn dunya rss generic_sites --scrape-limit 45 --pipeline-limit 200
     python manage.py run_news_cycle --skip-scrape --pipeline-limit 100
     python manage.py run_news_cycle --skip-pipeline --sources rss --scrape-limit 15
 
@@ -24,20 +24,20 @@ class Command(BaseCommand):
         parser.add_argument(
             "--sources",
             nargs="+",
-            default=["rss"],
-            help="Passed to scrape_raw_news (e.g. rss dawn dunya). Default: rss.",
+            default=["dawn", "dunya", "rss", "generic_sites"],
+            help="Passed to scrape_raw_news. Default: dawn dunya rss generic_sites.",
         )
         parser.add_argument(
             "--scrape-limit",
             type=int,
-            default=25,
-            help="Max new articles per source for scrape_raw_news (default 25).",
+            default=40,
+            help="Max new articles per source for scrape_raw_news (default 40).",
         )
         parser.add_argument(
             "--pipeline-limit",
             type=int,
-            default=30,
-            help="Max pending raw docs for run_ai_pipeline (default 30).",
+            default=200,
+            help="Max pending raw docs for run_ai_pipeline (default 200).",
         )
         parser.add_argument(
             "--skip-scrape",

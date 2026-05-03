@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import re
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Optional
 
 from bson import ObjectId
@@ -192,45 +192,165 @@ def upsert_user_keywords(user: User, keywords: list[str]) -> dict[str, Any]:
 
 
 def get_explore_feed(limit: int = 200, *, search_q: str = "") -> list[dict]:
+    page = get_explore_feed_page(limit=limit, search_q=search_q, cursor=None)
+    return page["results"]
+
+
+def _cursor_payload_from_doc(doc: dict) -> Optional[str]:
+    dt = doc.get("processed_at")
+    oid = doc.get("_id")
+    if not isinstance(dt, datetime) or not isinstance(oid, ObjectId):
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return f"{dt.isoformat()}|{str(oid)}"
+
+
+def _query_after_cursor(cursor: str) -> dict:
+    try:
+        dt_raw, oid_raw = cursor.split("|", 1)
+        dt = datetime.fromisoformat(dt_raw)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        oid = ObjectId(oid_raw)
+        return {
+            "$or": [
+                {"processed_at": {"$lt": dt}},
+                {"processed_at": dt, "_id": {"$lt": oid}},
+            ]
+        }
+    except Exception:
+        return {}
+
+
+def _explore_rank_score(doc: dict, now: datetime) -> float:
     """
-    Non-personalized feed for Explore: show all scraped/processed content.
-    Optional search_q narrows results across all articles.
+    Lightweight ranking score for Explore.
+    - Recency: newer articles rank higher.
+    - Credibility: real/high-confidence > suspicious > fake.
     """
+    processed_at = doc.get("processed_at")
+    if isinstance(processed_at, datetime):
+        dt = processed_at if processed_at.tzinfo else processed_at.replace(tzinfo=timezone.utc)
+    else:
+        dt = now
+    age_hours = max(0.0, (now - dt).total_seconds() / 3600.0)
+    recency_score = 1.0 / (1.0 + age_hours / 12.0)  # half-life-ish around 12 hours
+
+    cred = 0.55
+    label = doc.get("credibility_label")
+    max_prob = doc.get("credibility_max_prob")
+    if label == 0:
+        cred = 1.0
+    elif label == 2:
+        cred = 0.75
+    elif label == 1:
+        cred = 0.35
+    if isinstance(max_prob, (int, float)):
+        cred = 0.7 * cred + 0.3 * float(max_prob)
+    return 0.7 * recency_score + 0.3 * cred
+
+
+def _rank_for_diversity(docs: list[dict], now: datetime, take: int) -> list[dict]:
+    """
+    Greedy rerank to diversify sources (similar to social feed source-mixing).
+    """
+    ranked = sorted(docs, key=lambda d: _explore_rank_score(d, now), reverse=True)
+    source_counts: dict[str, int] = {}
+    chosen: list[dict] = []
+    remaining = ranked[:]
+    while remaining and len(chosen) < take:
+        best_idx = 0
+        best_val = float("-inf")
+        for idx, doc in enumerate(remaining):
+            src = str(doc.get("source_key") or "unknown")
+            diversity_penalty = 0.12 * source_counts.get(src, 0)
+            val = _explore_rank_score(doc, now) - diversity_penalty
+            if val > best_val:
+                best_val = val
+                best_idx = idx
+        picked = remaining.pop(best_idx)
+        src = str(picked.get("source_key") or "unknown")
+        source_counts[src] = source_counts.get(src, 0) + 1
+        chosen.append(picked)
+    return chosen
+
+
+def get_explore_feed_page(
+    *,
+    limit: int = 30,
+    search_q: str = "",
+    cursor: Optional[str] = None,
+) -> dict[str, Any]:
+    """Cursor-based Explore page for infinite scrolling."""
     q = (search_q or "").strip().lower()
     proc = processed_collection()
     raw_col = raw_collection()
-    out: list[dict] = []
-    cursor = proc.find().sort("processed_at", -1).limit(max(limit * 2, limit))
-    for doc in cursor:
-        raw_doc = None
-        url = doc.get("canonical_url") or doc.get("raw_canonical_url")
-        if url:
-            raw_doc = raw_col.find_one({"canonical_url": url})
-        if q:
-            hay = _doc_haystack(doc, raw_doc)
-            if q not in hay:
-                continue
-        out.append(article_to_api_dict(doc, raw_doc))
-        if len(out) >= limit:
-            return out
 
-    if len(out) < limit:
-        for raw_doc in raw_col.find().sort("fetched_at", -1).limit(limit):
-            stub = {
-                "_id": raw_doc.get("_id"),
-                "title": raw_doc.get("title"),
-                "summary": (raw_doc.get("body_text") or "")[:500],
-                "clean_text": raw_doc.get("body_text"),
-                "canonical_url": raw_doc.get("canonical_url"),
-                "source_key": raw_doc.get("source_key"),
-                "published_at": raw_doc.get("published_at"),
-                "credibility_label": None,
-            }
+    page_size = max(1, min(int(limit or 30), 200))
+    batch_size = max(page_size * 4, 80)
+    query = _query_after_cursor(cursor or "")
+
+    out: list[dict] = []
+    last_seen_doc: Optional[dict] = None
+    now = datetime.now(timezone.utc)
+
+    while len(out) < page_size:
+        docs = list(
+            proc.find(query)
+            .sort([("processed_at", -1), ("_id", -1)])
+            .limit(batch_size)
+        )
+        if not docs:
+            break
+        # No search filter: keep cursor pagination strict so every article appears eventually.
+        if not q:
+            ranked_batch = _rank_for_diversity(docs[:page_size], now, take=page_size)
+            for doc in ranked_batch:
+                raw_doc = None
+                url = doc.get("canonical_url") or doc.get("raw_canonical_url")
+                if url:
+                    raw_doc = raw_col.find_one({"canonical_url": url})
+                out.append(article_to_api_dict(doc, raw_doc))
+            last_seen_doc = docs[min(page_size, len(docs)) - 1]
+            break
+
+        filtered: list[dict] = []
+        for doc in docs:
+            last_seen_doc = doc
             if q:
-                hay = _doc_haystack(stub, raw_doc)
+                raw_doc = None
+                url = doc.get("canonical_url") or doc.get("raw_canonical_url")
+                if url:
+                    raw_doc = raw_col.find_one({"canonical_url": url})
+                hay = _doc_haystack(doc, raw_doc)
                 if q not in hay:
                     continue
-            out.append(article_to_api_dict(stub, raw_doc))
-            if len(out) >= limit:
+            filtered.append(doc)
+
+        ranked_batch = _rank_for_diversity(filtered, now, take=page_size - len(out))
+        for doc in ranked_batch:
+            raw_doc = None
+            url = doc.get("canonical_url") or doc.get("raw_canonical_url")
+            if url:
+                raw_doc = raw_col.find_one({"canonical_url": url})
+            out.append(article_to_api_dict(doc, raw_doc))
+            if len(out) >= page_size:
                 break
-    return out
+        # advance scan window to avoid rescanning already-considered documents
+        next_scan_cursor = _cursor_payload_from_doc(docs[-1])
+        if not next_scan_cursor:
+            break
+        query = _query_after_cursor(next_scan_cursor)
+
+    next_cursor = _cursor_payload_from_doc(last_seen_doc or {})
+    has_more = False
+    if next_cursor:
+        has_more = (
+            proc.find_one(
+                _query_after_cursor(next_cursor),
+                sort=[("processed_at", -1), ("_id", -1)],
+            )
+            is not None
+        )
+    return {"results": out, "next_cursor": next_cursor if has_more else None, "has_more": has_more}

@@ -44,12 +44,13 @@ class ExploreFeedView(APIView):
 
     def get(self, request):
         try:
-            limit = min(int(request.query_params.get("limit", 200)), 500)
+            limit = min(int(request.query_params.get("limit", 30)), 200)
         except ValueError:
-            limit = 200
+            limit = 30
         q = (request.query_params.get("q") or "").strip()
-        data = article_query.get_explore_feed(limit=limit, search_q=q)
-        return Response({"results": data})
+        cursor = (request.query_params.get("cursor") or "").strip() or None
+        page = article_query.get_explore_feed_page(limit=limit, search_q=q, cursor=cursor)
+        return Response(page)
 
 
 class TrackKeywordsView(APIView):
@@ -237,6 +238,22 @@ class BookmarkDeleteView(APIView):
 
 class ReactionView(APIView):
     permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        rows = list(reactions_collection().find({"user_id": request.user.pk}))
+        return Response(
+            {
+                "results": [
+                    {
+                        "article_id": str(r.get("article_id") or ""),
+                        "reaction": str(r.get("reaction") or "none"),
+                        "updated_at": r.get("updated_at"),
+                    }
+                    for r in rows
+                    if r.get("article_id")
+                ]
+            }
+        )
 
     def post(self, request):
         article_id = str(request.data.get("article_id") or "").strip()

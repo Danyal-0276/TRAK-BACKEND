@@ -67,6 +67,8 @@ GENERIC_SITES: list[dict] = [
         "base_url": "https://tribune.com.pk",
         "listing_urls": [
             "https://tribune.com.pk/latest/",
+            "https://tribune.com.pk/pakistan/",
+            "https://tribune.com.pk/world/",
         ],
         # Match story URLs; strip trailing slash optional
         "article_href_regex": r"https://(www\.)?tribune\.com\.pk/story/\d+",
@@ -80,7 +82,7 @@ GENERIC_SITES: list[dict] = [
             "image": "meta[property='og:image']",
         },
         "fallback_generic": True,
-        "max_per_site": 15,
+        "max_per_site": 30,
     },
     {
         "key": "the_news_pk",
@@ -90,6 +92,8 @@ GENERIC_SITES: list[dict] = [
         "base_url": "https://www.thenews.com.pk",
         "listing_urls": [
             "https://www.thenews.com.pk/latest/category/national",
+            "https://www.thenews.com.pk/latest/category/world",
+            "https://www.thenews.com.pk/latest/category/business",
         ],
         # Current site uses /latest/<numeric-id>-slug (not only /print/ or date paths).
         "article_href_regex": r"https://www\.thenews\.com\.pk/latest/\d+|https://www\.thenews\.com\.pk/(print|article)/\d+|https://www\.thenews\.com\.pk/\d{2}/\d{2}/\d{4}/",
@@ -102,7 +106,7 @@ GENERIC_SITES: list[dict] = [
             "published": "meta[property='article:published_time']",
         },
         "fallback_generic": True,
-        "max_per_site": 15,
+        "max_per_site": 30,
     },
     {
         "key": "geo_news_en",
@@ -123,7 +127,7 @@ GENERIC_SITES: list[dict] = [
             "image": "meta[property='og:image']",
         },
         "fallback_generic": True,
-        "max_per_site": 15,
+        "max_per_site": 30,
     },
     {
         "key": "medium_publication_template",
