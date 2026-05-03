@@ -40,7 +40,10 @@ def _round_robin_entries(
     for feed_url in feeds:
         if not robots_util.allowed(feed_url, ua):
             continue
-        fr = client.get(feed_url)
+        try:
+            fr = client.get(feed_url)
+        except Exception:
+            continue
         if fr.status_code != 200:
             continue
         parsed = feedparser.parse(fr.text)
@@ -88,7 +91,11 @@ def run(client: PoliteHttpClient, *, limit: int = 30) -> dict:
         if not robots_util.allowed(link, ua):
             skipped += 1
             continue
-        r = client.get(link)
+        try:
+            r = client.get(link)
+        except Exception:
+            skipped += 1
+            continue
         if r.status_code != 200:
             skipped += 1
             continue
