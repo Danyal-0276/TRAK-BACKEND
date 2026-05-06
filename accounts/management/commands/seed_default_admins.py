@@ -59,6 +59,7 @@ class Command(BaseCommand):
                     pwd,
                     role=User.Role.ADMIN,
                     is_staff=True,
+                    is_superuser=True,
                 )
                 created += 1
                 self.stdout.write(self.style.SUCCESS(f"Created admin: {email}"))
@@ -69,6 +70,9 @@ class Command(BaseCommand):
                     dirty = True
                 if not user.is_staff:
                     user.is_staff = True
+                    dirty = True
+                if not user.is_superuser:
+                    user.is_superuser = True
                     dirty = True
                 user.set_password(pwd)
                 dirty = True
