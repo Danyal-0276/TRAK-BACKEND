@@ -64,8 +64,11 @@ def _profile_collection():
     global _profile_indexes_ready
     col = get_db()["user_profiles"]
     if not _profile_indexes_ready:
-        col.create_index("user_id", unique=True)
-        _profile_indexes_ready = True
+        try:
+            col.create_index("user_id", unique=True)
+            _profile_indexes_ready = True
+        except Exception:
+            logger.exception("Failed to initialize user_profiles indexes")
     return col
 
 
@@ -73,18 +76,17 @@ def _follow_collection():
     global _follow_indexes_ready
     col = get_db()["user_follows"]
     if not _follow_indexes_ready:
-        col.create_index([("follower_user_id", 1), ("followed_user_id", 1)], unique=True)
-        col.create_index("follower_user_id")
-        col.create_index("followed_user_id")
-        _follow_indexes_ready = True
+        try:
+            col.create_index([("follower_user_id", 1), ("followed_user_id", 1)], unique=True)
+            col.create_index("follower_user_id")
+            col.create_index("followed_user_id")
+            _follow_indexes_ready = True
+        except Exception:
+            logger.exception("Failed to initialize user_follows indexes")
     return col
 
 
 def _get_profile(user_id: int) -> dict:
-    col = _profile_collection()
-    row = col.find_one({"user_id": user_id})
-    if row:
-        return row
     default = {
         "user_id": user_id,
         "full_name": "",
@@ -97,15 +99,27 @@ def _get_profile(user_id: int) -> dict:
         "followers_count": 0,
         "following_count": 0,
     }
-    col.insert_one(default)
+    try:
+        col = _profile_collection()
+        row = col.find_one({"user_id": user_id})
+        if row:
+            return row
+        col.insert_one(default)
+    except Exception:
+        logger.exception("Failed to read/create profile for user_id=%s", user_id)
     return default
 
 
 def _user_payload(user: User) -> dict:
     p = _get_profile(user.pk)
-    follows = _follow_collection()
-    followers_count = follows.count_documents({"followed_user_id": user.pk})
-    following_count = follows.count_documents({"follower_user_id": user.pk})
+    followers_count = 0
+    following_count = 0
+    try:
+        follows = _follow_collection()
+        followers_count = follows.count_documents({"followed_user_id": user.pk})
+        following_count = follows.count_documents({"follower_user_id": user.pk})
+    except Exception:
+        logger.exception("Failed to calculate follow counts for user_id=%s", user.pk)
     username = (p.get("username") or "").strip()
     if not username:
         username = (user.email or "").split("@")[0]
@@ -450,23 +464,27 @@ class RegisterView(APIView):
         full_name = str(request.data.get("full_name") or "").strip()
         phone = _normalize_phone(str(request.data.get("phone") or ""))
         email_prefix = (user.email or "").split("@")[0]
-        _profile_collection().update_one(
-            {"user_id": user.pk},
-            {
-                "$set": {
-                    "full_name": full_name,
-                    "username": email_prefix,
-                    "phone": phone,
-                    "email_verified": False,
-                    "phone_verified": False,
-                    "bio": "",
-                    "avatar_image": "",
-                    "followers_count": 0,
-                    "following_count": 0,
-                }
-            },
-            upsert=True,
-        )
+        try:
+            _profile_collection().update_one(
+                {"user_id": user.pk},
+                {
+                    "$set": {
+                        "full_name": full_name,
+                        "username": email_prefix,
+                        "phone": phone,
+                        "email_verified": False,
+                        "phone_verified": False,
+                        "bio": "",
+                        "avatar_image": "",
+                        "followers_count": 0,
+                        "following_count": 0,
+                    }
+                },
+                upsert=True,
+            )
+        except Exception:
+            # Do not fail account creation if Mongo profile sync is temporarily down.
+            logger.exception("Mongo profile sync failed during registration for user_id=%s", user.pk)
         refresh = RefreshToken.for_user(user)
         return Response(
             {
