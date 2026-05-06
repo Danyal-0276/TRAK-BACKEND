@@ -39,6 +39,9 @@ DEBUG = os.environ.get("DJANGO_DEBUG", "False").lower() in ("1", "true", "yes")
 
 _allowed = os.environ.get("DJANGO_ALLOWED_HOSTS", "localhost,127.0.0.1").strip()
 ALLOWED_HOSTS = [h.strip() for h in _allowed.split(",") if h.strip()]
+_render_host = os.environ.get("RENDER_EXTERNAL_HOSTNAME", "").strip()
+if _render_host and _render_host not in ALLOWED_HOSTS:
+    ALLOWED_HOSTS.append(_render_host)
 
 AUTH_USER_MODEL = "accounts.User"
 
@@ -203,6 +206,8 @@ if _csrf_trusted_origins:
     CSRF_TRUSTED_ORIGINS = [
         o.strip() for o in _csrf_trusted_origins.split(",") if o.strip()
     ]
+elif _render_host:
+    CSRF_TRUSTED_ORIGINS = [f"https://{_render_host}"]
 
 SIMPLE_JWT = {
     "ACCESS_TOKEN_LIFETIME": timedelta(
