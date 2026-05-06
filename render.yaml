@@ -1,0 +1,7 @@
+services:
+  - type: web
+    name: trak-backend
+    runtime: python
+    buildCommand: pip install -r requirements.txt && python manage.py collectstatic --noinput
+    startCommand: daphne -b 0.0.0.0 -p $PORT TRAK_Backend.asgi:application
+    autoDeploy: true

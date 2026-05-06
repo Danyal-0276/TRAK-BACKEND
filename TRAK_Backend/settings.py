@@ -22,10 +22,7 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 
 load_dotenv(dotenv_path=os.path.join(BASE_DIR, ".env"))
 
-MONGODB_URI = os.environ.get("MONGODB_URI")
-
-if not MONGODB_URI:
-    raise Exception("MONGODB_URI is missing in .env file")
+MONGODB_URI = os.environ.get("MONGODB_URI", "mongodb://127.0.0.1:27017/")
 
 
 # Quick-start development settings - unsuitable for production
@@ -38,7 +35,7 @@ SECRET_KEY = os.environ.get(
 )
 
 # SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = os.environ.get("DJANGO_DEBUG", "True").lower() in ("1", "true", "yes")
+DEBUG = os.environ.get("DJANGO_DEBUG", "False").lower() in ("1", "true", "yes")
 
 _allowed = os.environ.get("DJANGO_ALLOWED_HOSTS", "localhost,127.0.0.1").strip()
 ALLOWED_HOSTS = [h.strip() for h in _allowed.split(",") if h.strip()]
@@ -86,6 +83,7 @@ INSTALLED_APPS = [
 MIDDLEWARE = [
     'corsheaders.middleware.CorsMiddleware',
     'django.middleware.security.SecurityMiddleware',
+    'whitenoise.middleware.WhiteNoiseMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
     'django.middleware.common.CommonMiddleware',
     'django.middleware.csrf.CsrfViewMiddleware',
@@ -119,24 +117,12 @@ ASGI_APPLICATION = "TRAK_Backend.asgi.application"
 # Database
 # https://docs.djangoproject.com/en/3.2/ref/settings/#databases
 
-_db_engine = os.environ.get("DJANGO_DB_ENGINE", "sqlite3").strip().lower()
-if _db_engine == "djongo":
-    DATABASES = {
-        "default": {
-            "ENGINE": "djongo",
-            "NAME": os.environ.get("DJANGO_DB_NAME", "TRAK_DB"),
-            "CLIENT": {
-                 "host": os.environ.get("MONGODB_URI")
-            }
-        }
+DATABASES = {
+    "default": {
+        "ENGINE": "django.db.backends.sqlite3",
+        "NAME": BASE_DIR / os.environ.get("DJANGO_SQLITE_NAME", "db.sqlite3"),
     }
-else:
-    DATABASES = {
-        "default": {
-            "ENGINE": "django.db.backends.sqlite3",
-            "NAME": BASE_DIR / os.environ.get("DJANGO_SQLITE_NAME", "db.sqlite3"),
-        }
-    }
+}
 
 # Password validation
 # https://docs.djangoproject.com/en/3.2/ref/settings/#auth-password-validators
@@ -156,9 +142,6 @@ AUTH_PASSWORD_VALIDATORS = [
     },
 ]
 
-print("ENV DB ENGINE RAW:", os.getenv("DJANGO_DB_ENGINE"))
-print("ENV DB ENGINE RAW:", os.getenv("DJANGO_DB_ENGINE"))
-
 # Internationalization
 # https://docs.djangoproject.com/en/3.2/topics/i18n/
 
@@ -177,6 +160,8 @@ USE_TZ = True
 # https://docs.djangoproject.com/en/3.2/howto/static-files/
 
 STATIC_URL = '/static/'
+STATIC_ROOT = BASE_DIR / 'staticfiles'
+STATICFILES_STORAGE = 'whitenoise.storage.CompressedManifestStaticFilesStorage'
 
 # Default primary key field type
 # https://docs.djangoproject.com/en/3.2/ref/settings/#default-auto-field
@@ -212,6 +197,12 @@ _cors_origins = os.environ.get("CORS_ALLOWED_ORIGINS", "").strip()
 if _cors_origins:
     CORS_ALLOW_ALL_ORIGINS = False
     CORS_ALLOWED_ORIGINS = [o.strip() for o in _cors_origins.split(",") if o.strip()]
+
+_csrf_trusted_origins = os.environ.get("CSRF_TRUSTED_ORIGINS", "").strip()
+if _csrf_trusted_origins:
+    CSRF_TRUSTED_ORIGINS = [
+        o.strip() for o in _csrf_trusted_origins.split(",") if o.strip()
+    ]
 
 SIMPLE_JWT = {
     "ACCESS_TOKEN_LIFETIME": timedelta(
@@ -286,12 +277,14 @@ if not DEBUG:
     SECURE_HSTS_INCLUDE_SUBDOMAINS = (
         os.environ.get("SECURE_HSTS_INCLUDE_SUBDOMAINS", "true").lower() in ("1", "true", "yes")
     )
+    SECURE_HSTS_PRELOAD = (
+        os.environ.get("SECURE_HSTS_PRELOAD", "false").lower() in ("1", "true", "yes")
+    )
     SECURE_CONTENT_TYPE_NOSNIFF = True
     X_FRAME_OPTIONS = "DENY"
     SECURE_REFERRER_POLICY = os.environ.get("SECURE_REFERRER_POLICY", "same-origin")
 
 # --- Raw news scrapers (pymongo collection `raw_articles` in TRAK_DB) ---
-MONGODB_URI = os.environ.get("MONGODB_URI", "mongodb://127.0.0.1:27017/")
 MONGODB_RAW_DATABASE = os.environ.get("MONGODB_RAW_DATABASE", "TRAK_DB")
 MONGODB_RAW_COLLECTION = os.environ.get("MONGODB_RAW_COLLECTION", "raw_articles")
 MONGODB_PROCESSED_COLLECTION = os.environ.get("MONGODB_PROCESSED_COLLECTION", "processed_articles")
