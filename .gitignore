@@ -4,6 +4,7 @@ venv/
 env/
 .env
 .env.*
+!.env.example
 
 # Byte-compiled / cache
 __pycache__/
