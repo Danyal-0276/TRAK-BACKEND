@@ -304,7 +304,14 @@ class OtpVerifyView(APIView):
                 user = User.objects.create_user(email=email, password=User.objects.make_random_password())
         else:
             # Login should bind to an existing profile using this phone number.
-            profile_row = _profile_collection().find_one({"phone": normalized_identity})
+            try:
+                profile_row = _profile_collection().find_one({"phone": normalized_identity})
+            except Exception:
+                logger.exception("Mongo lookup failed during OTP phone login")
+                return Response(
+                    {"detail": "Profile service is temporarily unavailable. Please try again shortly."},
+                    status=status.HTTP_503_SERVICE_UNAVAILABLE,
+                )
             if not profile_row:
                 return Response({"detail": "No account is linked to this phone number."}, status=status.HTTP_400_BAD_REQUEST)
             try:
@@ -314,19 +321,24 @@ class OtpVerifyView(APIView):
             user = User.objects.filter(pk=linked_user_id).first()
             if not user:
                 return Response({"detail": "Account linked to this phone no longer exists."}, status=status.HTTP_400_BAD_REQUEST)
-        profile = _get_profile(user.pk)
         if channel == "phone":
-            _profile_collection().update_one(
-                {"user_id": user.pk},
-                {"$set": {"phone": normalized_identity, "phone_verified": True}},
-                upsert=True,
-            )
+            try:
+                _profile_collection().update_one(
+                    {"user_id": user.pk},
+                    {"$set": {"phone": normalized_identity, "phone_verified": True}},
+                    upsert=True,
+                )
+            except Exception:
+                logger.exception("Mongo update failed during OTP phone verification for user_id=%s", user.pk)
         else:
-            _profile_collection().update_one(
-                {"user_id": user.pk},
-                {"$set": {"email_verified": True}},
-                upsert=True,
-            )
+            try:
+                _profile_collection().update_one(
+                    {"user_id": user.pk},
+                    {"$set": {"email_verified": True}},
+                    upsert=True,
+                )
+            except Exception:
+                logger.exception("Mongo update failed during OTP email verification for user_id=%s", user.pk)
 
         refresh = RefreshToken.for_user(user)
         return Response(
@@ -539,7 +551,14 @@ class ProfileView(APIView):
                 payload[key] = val
         if not payload:
             return Response({"detail": "No updatable fields provided."}, status=status.HTTP_400_BAD_REQUEST)
-        _profile_collection().update_one({"user_id": request.user.pk}, {"$set": payload}, upsert=True)
+        try:
+            _profile_collection().update_one({"user_id": request.user.pk}, {"$set": payload}, upsert=True)
+        except Exception:
+            logger.exception("Mongo update failed for profile patch user_id=%s", request.user.pk)
+            return Response(
+                {"detail": "Profile service is temporarily unavailable. Please try again shortly."},
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
         return Response(_user_payload(request.user), status=status.HTTP_200_OK)
 
 
@@ -559,7 +578,14 @@ class VerifyContactRequestView(APIView):
             identity = _normalize_phone(str(request.data.get("phone") or profile.get("phone") or ""))
             if not identity:
                 return Response({"detail": "Phone is required to verify phone."}, status=status.HTTP_400_BAD_REQUEST)
-            _profile_collection().update_one({"user_id": request.user.pk}, {"$set": {"phone": identity}}, upsert=True)
+            try:
+                _profile_collection().update_one({"user_id": request.user.pk}, {"$set": {"phone": identity}}, upsert=True)
+            except Exception:
+                logger.exception("Mongo update failed during verify request for user_id=%s", request.user.pk)
+                return Response(
+                    {"detail": "Profile service is temporarily unavailable. Please try again shortly."},
+                    status=status.HTTP_503_SERVICE_UNAVAILABLE,
+                )
 
         otp = f"{random.randint(0, 999999):06d}"
         cache.set(_otp_cache_key(channel, identity), otp, timeout=600)
@@ -600,7 +626,14 @@ class VerifyContactConfirmView(APIView):
             return Response({"detail": "Invalid or expired verification code."}, status=status.HTTP_400_BAD_REQUEST)
         cache.delete(_otp_cache_key(channel, identity))
         field = "email_verified" if channel == "email" else "phone_verified"
-        _profile_collection().update_one({"user_id": request.user.pk}, {"$set": {field: True}}, upsert=True)
+        try:
+            _profile_collection().update_one({"user_id": request.user.pk}, {"$set": {field: True}}, upsert=True)
+        except Exception:
+            logger.exception("Mongo update failed during verify confirm for user_id=%s", request.user.pk)
+            return Response(
+                {"detail": "Profile service is temporarily unavailable. Please try again shortly."},
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
         return Response(_user_payload(request.user), status=status.HTTP_200_OK)
 
 
@@ -678,11 +711,18 @@ class FollowView(APIView):
         target_user = User.objects.filter(pk=target_user_id).first()
         if not target_user:
             return Response({"detail": "Target user not found."}, status=status.HTTP_404_NOT_FOUND)
-        _follow_collection().update_one(
-            {"follower_user_id": request.user.pk, "followed_user_id": target_user_id},
-            {"$set": {"follower_user_id": request.user.pk, "followed_user_id": target_user_id}},
-            upsert=True,
-        )
+        try:
+            _follow_collection().update_one(
+                {"follower_user_id": request.user.pk, "followed_user_id": target_user_id},
+                {"$set": {"follower_user_id": request.user.pk, "followed_user_id": target_user_id}},
+                upsert=True,
+            )
+        except Exception:
+            logger.exception("Mongo update failed during follow action user_id=%s", request.user.pk)
+            return Response(
+                {"detail": "Follow service is temporarily unavailable. Please try again shortly."},
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
         return Response(
             {
                 "detail": "Followed successfully.",
@@ -698,7 +738,14 @@ class FollowView(APIView):
             target_user_id = int(target_user_id)
         except (TypeError, ValueError):
             return Response({"detail": "user_id must be a valid integer."}, status=status.HTTP_400_BAD_REQUEST)
-        _follow_collection().delete_one({"follower_user_id": request.user.pk, "followed_user_id": target_user_id})
+        try:
+            _follow_collection().delete_one({"follower_user_id": request.user.pk, "followed_user_id": target_user_id})
+        except Exception:
+            logger.exception("Mongo delete failed during unfollow action user_id=%s", request.user.pk)
+            return Response(
+                {"detail": "Follow service is temporarily unavailable. Please try again shortly."},
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
         target_user = User.objects.filter(pk=target_user_id).first()
         return Response(
             {
