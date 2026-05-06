@@ -14,14 +14,18 @@ class RegisterSerializer(serializers.ModelSerializer):
         read_only_fields = ("id", "role", "created_at")
 
     def validate(self, attrs):
-        if attrs["password"] != attrs["password_confirm"]:
+        password = attrs["password"].strip()
+        password_confirm = attrs["password_confirm"].strip()
+        if password != password_confirm:
             raise serializers.ValidationError({"password_confirm": "Passwords do not match."})
-        validate_password(attrs["password"])
+        validate_password(password)
+        attrs["password"] = password
+        attrs["password_confirm"] = password_confirm
         return attrs
 
     def create(self, validated_data):
         validated_data.pop("password_confirm")
-        password = validated_data.pop("password")
+        password = validated_data.pop("password").strip()
         email = validated_data.pop("email").strip().lower()
         # Self-registration never grants admin privileges.
         role = str(User.Role.USER)
@@ -45,10 +49,27 @@ class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
         raw_email = attrs.get(username_field, "")
         if isinstance(raw_email, str):
             attrs[username_field] = raw_email.strip().lower()
-        raw_password = attrs.get("password", "")
+        raw_password = attrs.get("password")
+        password_candidates = [raw_password]
         if isinstance(raw_password, str):
-            attrs["password"] = raw_password.strip()
-        data = super().validate(attrs)
+            stripped = raw_password.strip()
+            if stripped != raw_password:
+                password_candidates.append(stripped)
+
+        last_error = None
+        data = None
+        for candidate in password_candidates:
+            attempt = attrs.copy()
+            attempt["password"] = candidate
+            try:
+                data = super().validate(attempt)
+                break
+            except Exception as exc:  # pragma: no cover - serializer-level fallback
+                last_error = exc
+
+        if data is None and last_error is not None:
+            raise last_error
+
         data["user"] = UserSerializer(self.user).data
         return data
 
