@@ -19,18 +19,36 @@ from __future__ import annotations
 
 import json
 import os
+import random
 from datetime import datetime, timezone
 
 import numpy as np
 import pandas as pd
-from sklearn.metrics import classification_report, confusion_matrix
+from sklearn.metrics import classification_report, confusion_matrix, roc_auc_score
 from sklearn.model_selection import train_test_split
+from sklearn.utils.class_weight import compute_class_weight
 
 _ID2LABEL = {0: "real", 1: "fake", 2: "suspicious"}
 _LABEL_NAMES = ["real", "fake", "suspicious"]
 
 
+def _inject_ner_tags(text: str, nlp, max_chars: int) -> str:
+    """Inject lightweight entity tags inline: 'Joe Biden [PERSON]'."""
+    src = (text or "")[:max_chars]
+    if not src.strip():
+        return src
+    doc = nlp(src)
+    out = src
+    for ent in reversed(doc.ents):
+        out = out[: ent.end_char] + f" [{ent.label_}]" + out[ent.end_char :]
+    return out
+
+
 def main():
+    seed = int(os.environ.get("SEED", "42"))
+    random.seed(seed)
+    np.random.seed(seed)
+
     csv_path = os.environ.get("CREDIBILITY_TRAIN_CSV", "").strip()
     parquet_path = os.environ.get("CREDIBILITY_TRAIN_PARQUET", "").strip()
     path = csv_path or parquet_path
@@ -49,6 +67,8 @@ def main():
             raise SystemExit(f"Dataset must have column: {col}")
     df = df[["text", "label"]].copy()
     df = df.dropna(subset=["text", "label"])
+    df["text"] = df["text"].astype(str).str.strip()
+    df = df[df["text"] != ""]
     df["label"] = df["label"].astype(int)
 
     max_train = os.environ.get("CREDIBILITY_MAX_TRAIN", "").strip()
@@ -69,6 +89,7 @@ def main():
         from datasets import Dataset
         from transformers import (
             AutoModelForSequenceClassification,
+            EarlyStoppingCallback,
             AutoTokenizer,
             Trainer,
             TrainingArguments,
@@ -77,18 +98,35 @@ def main():
         raise SystemExit("pip install -r requirements-ml.txt") from e
 
     import torch
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
 
     model_name = os.environ.get("CREDIBILITY_BASE_MODEL", "roberta-base")
     out_dir = os.environ.get("CREDIBILITY_OUT_DIR", "ml_artifacts/credibility/latest")
+    use_ner = os.environ.get("USE_NER", "false").strip().lower() in {"1", "true", "yes", "on"}
+    ner_strategy = os.environ.get("NER_STRATEGY", "inject").strip().lower()
+    max_ner_chars = int(os.environ.get("NER_MAX_CHARS", "1200"))
+
+    if use_ner and ner_strategy == "inject":
+        try:
+            import spacy
+            nlp = spacy.load(os.environ.get("SPACY_MODEL", "en_core_web_sm"))
+            print("Applying NER tag injection to training/eval text...")
+            df["text"] = df["text"].map(lambda t: _inject_ner_tags(t, nlp, max_ner_chars))
+        except Exception as e:
+            raise SystemExit(
+                f"USE_NER=true with inject strategy requires spaCy model. Error: {e}"
+            ) from e
 
     try:
         train_df, eval_df = train_test_split(
-            df, test_size=0.1, random_state=42, stratify=df["label"]
+            df, test_size=0.1, random_state=seed, stratify=df["label"]
         )
     except ValueError:
-        train_df, eval_df = train_test_split(df, test_size=0.1, random_state=42)
+        train_df, eval_df = train_test_split(df, test_size=0.1, random_state=seed)
     tokenizer = AutoTokenizer.from_pretrained(model_name)
-    max_seq = int(os.environ.get("CREDIBILITY_MAX_LENGTH", "256"))
+    max_seq = int(os.environ.get("CREDIBILITY_MAX_LENGTH", os.environ.get("MAX_LEN", "256")))
 
     def tok(batch):
         return tokenizer(
@@ -113,7 +151,19 @@ def main():
     pin_mem = torch.cuda.is_available()
     dl_workers = int(os.environ.get("DATALOADER_WORKERS", "0"))
     batch = int(os.environ.get("BATCH", 8))
+    lr = float(os.environ.get("LR", "2e-5"))
+    warmup_ratio = float(os.environ.get("WARMUP", "0.1"))
+    weight_decay = float(os.environ.get("WEIGHT_DECAY", "0.01"))
+    fp16 = os.environ.get("FP16", "false").strip().lower() in {"1", "true", "yes", "on"}
     max_steps_env = os.environ.get("CREDIBILITY_MAX_STEPS", "").strip()
+    grad_acc_steps = int(os.environ.get("GRAD_ACCUM_STEPS", "1"))
+
+    train_labels = train_df["label"].to_numpy()
+    uniq = np.array(sorted(np.unique(train_labels)))
+    class_weights_np = compute_class_weight(class_weight="balanced", classes=uniq, y=train_labels)
+    class_weights = torch.ones(3, dtype=torch.float)
+    for idx, cls in enumerate(uniq.tolist()):
+        class_weights[int(cls)] = float(class_weights_np[idx])
 
     if max_steps_env:
         ms = int(max_steps_env)
@@ -128,6 +178,13 @@ def main():
             logging_steps=max(1, ms // 4 or 1),
             dataloader_pin_memory=pin_mem,
             dataloader_num_workers=dl_workers,
+            learning_rate=lr,
+            warmup_ratio=warmup_ratio,
+            weight_decay=weight_decay,
+            lr_scheduler_type="linear",
+            gradient_accumulation_steps=grad_acc_steps,
+            fp16=fp16 and torch.cuda.is_available(),
+            seed=seed,
         )
         training_meta = {"mode": "max_steps", "max_steps": ms}
     else:
@@ -144,6 +201,13 @@ def main():
             logging_strategy="epoch",
             dataloader_pin_memory=pin_mem,
             dataloader_num_workers=dl_workers,
+            learning_rate=lr,
+            warmup_ratio=warmup_ratio,
+            weight_decay=weight_decay,
+            lr_scheduler_type="linear",
+            gradient_accumulation_steps=grad_acc_steps,
+            fp16=fp16 and torch.cuda.is_available(),
+            seed=seed,
         )
         training_meta = {
             "mode": "epochs",
@@ -176,12 +240,30 @@ def main():
         if "processing_class" in inspect.signature(Trainer.__init__).parameters
         else {"tokenizer": tokenizer}
     )
-    trainer = Trainer(
+    class WeightedTrainer(Trainer):
+        def compute_loss(self, model, inputs, return_outputs=False, **kwargs):
+            labels = inputs.get("labels")
+            outputs = model(
+                input_ids=inputs.get("input_ids"),
+                attention_mask=inputs.get("attention_mask"),
+            )
+            logits = outputs.get("logits")
+            cw = class_weights.to(logits.device)
+            loss_fct = torch.nn.CrossEntropyLoss(weight=cw)
+            loss = loss_fct(logits.view(-1, model.config.num_labels), labels.view(-1))
+            return (loss, outputs) if return_outputs else loss
+
+    callbacks = []
+    if not max_steps_env:
+        callbacks.append(EarlyStoppingCallback(early_stopping_patience=2))
+
+    trainer = WeightedTrainer(
         model=model,
         args=args,
         train_dataset=train_ds,
         eval_dataset=eval_ds if not max_steps_env else None,
         compute_metrics=compute_metrics if not max_steps_env else None,
+        callbacks=callbacks,
         **_tok_kw,
     )
     trainer.train()
@@ -189,7 +271,10 @@ def main():
     # Final eval: full sklearn report + confusion matrix on best checkpoint
     eval_preds = trainer.predict(eval_ds)
     y_true = np.array(eval_ds["labels"])
-    y_pred = np.argmax(eval_preds.predictions, axis=-1)
+    logits = np.array(eval_preds.predictions)
+    y_pred = np.argmax(logits, axis=-1)
+    exp_logits = np.exp(logits - logits.max(axis=1, keepdims=True))
+    y_proba = exp_logits / np.clip(exp_logits.sum(axis=1, keepdims=True), 1e-12, None)
 
     report = classification_report(
         y_true,
@@ -211,6 +296,13 @@ def main():
         for name in _LABEL_NAMES
     }
 
+    try:
+        roc_auc_ovr = float(
+            roc_auc_score(y_true, y_proba, multi_class="ovr", labels=[0, 1, 2])
+        )
+    except ValueError:
+        roc_auc_ovr = None
+
     metrics_doc = {
         "schema": "trak-credibility-eval/v1",
         "created_at_utc": datetime.now(timezone.utc).isoformat(),
@@ -221,6 +313,15 @@ def main():
         "eval_rows": int(len(eval_df)),
         "max_sequence_length": max_seq,
         "training_schedule": training_meta,
+        "seed": seed,
+        "learning_rate": lr,
+        "warmup_ratio": warmup_ratio,
+        "weight_decay": weight_decay,
+        "gradient_accumulation_steps": grad_acc_steps,
+        "fp16": bool(fp16 and torch.cuda.is_available()),
+        "class_weights": [float(x) for x in class_weights.cpu().tolist()],
+        "use_ner": use_ner,
+        "ner_strategy": ner_strategy if use_ner else None,
         "per_class": per_class,
         "macro_avg": {
             "precision": float(report["macro avg"]["precision"]),
@@ -235,6 +336,7 @@ def main():
             "support": int(report["weighted avg"]["support"]),
         },
         "accuracy": float(report["accuracy"]),
+        "roc_auc_ovr": roc_auc_ovr,
         "confusion_matrix": {
             "labels_row_col": [0, 1, 2],
             "matrix": cm,
