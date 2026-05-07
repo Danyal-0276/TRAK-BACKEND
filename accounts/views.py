@@ -701,12 +701,10 @@ class FollowView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def post(self, request):
-        target_user_id = request.data.get("user_id")
-        try:
-            target_user_id = int(target_user_id)
-        except (TypeError, ValueError):
-            return Response({"detail": "user_id must be a valid integer."}, status=status.HTTP_400_BAD_REQUEST)
-        if target_user_id == request.user.pk:
+        target_user_id = str(request.data.get("user_id") or "").strip()
+        if not target_user_id:
+            return Response({"detail": "user_id is required."}, status=status.HTTP_400_BAD_REQUEST)
+        if target_user_id == str(request.user.pk):
             return Response({"detail": "You cannot follow yourself."}, status=status.HTTP_400_BAD_REQUEST)
         target_user = User.objects.filter(pk=target_user_id).first()
         if not target_user:
