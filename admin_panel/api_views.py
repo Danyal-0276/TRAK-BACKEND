@@ -225,7 +225,7 @@ class AdminUsersView(APIView):
             {
                 "results": [
                     {
-                        "id": u.pk,
+                        "id": str(u.pk),
                         "email": u.email,
                         "role": u.role,
                         "is_active": bool(u.is_active),
@@ -240,7 +240,7 @@ class AdminUsersView(APIView):
 class AdminUserDetailView(APIView):
     permission_classes = [permissions.IsAuthenticated, IsAdminRole]
 
-    def patch(self, request, user_id: int):
+    def patch(self, request, user_id: str):
         user = User.objects.filter(pk=user_id).first()
         if not user:
             return Response({"detail": "User not found."}, status=status.HTTP_404_NOT_FOUND)
@@ -254,8 +254,8 @@ class AdminUserDetailView(APIView):
         user.save(update_fields=["role", "is_active"])
         return Response({"detail": "User updated."}, status=status.HTTP_200_OK)
 
-    def delete(self, request, user_id: int):
-        if request.user.pk == user_id:
+    def delete(self, request, user_id: str):
+        if str(request.user.pk) == str(user_id):
             return Response({"detail": "Cannot delete current admin user."}, status=status.HTTP_400_BAD_REQUEST)
         user = User.objects.filter(pk=user_id).first()
         if not user:
@@ -316,10 +316,7 @@ class AdminNotificationsView(APIView):
         )
 
     def post(self, request):
-        try:
-            user_id = int(request.data.get("user_id") or 0)
-        except (TypeError, ValueError):
-            return Response({"detail": "user_id must be an integer."}, status=status.HTTP_400_BAD_REQUEST)
+        user_id = str(request.data.get("user_id") or "").strip()
         if not user_id:
             return Response({"detail": "user_id is required."}, status=status.HTTP_400_BAD_REQUEST)
         try:

@@ -314,9 +314,8 @@ class OtpVerifyView(APIView):
                 )
             if not profile_row:
                 return Response({"detail": "No account is linked to this phone number."}, status=status.HTTP_400_BAD_REQUEST)
-            try:
-                linked_user_id = int(profile_row.get("user_id"))
-            except (TypeError, ValueError):
+            linked_user_id = profile_row.get("user_id")
+            if not linked_user_id:
                 return Response({"detail": "Invalid phone profile mapping."}, status=status.HTTP_400_BAD_REQUEST)
             user = User.objects.filter(pk=linked_user_id).first()
             if not user:
@@ -701,12 +700,10 @@ class FollowView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def post(self, request):
-        target_user_id = request.data.get("user_id")
-        try:
-            target_user_id = int(target_user_id)
-        except (TypeError, ValueError):
-            return Response({"detail": "user_id must be a valid integer."}, status=status.HTTP_400_BAD_REQUEST)
-        if target_user_id == request.user.pk:
+        target_user_id = str(request.data.get("user_id") or "").strip()
+        if not target_user_id:
+            return Response({"detail": "user_id is required."}, status=status.HTTP_400_BAD_REQUEST)
+        if target_user_id == str(request.user.pk):
             return Response({"detail": "You cannot follow yourself."}, status=status.HTTP_400_BAD_REQUEST)
         target_user = User.objects.filter(pk=target_user_id).first()
         if not target_user:
@@ -733,11 +730,11 @@ class FollowView(APIView):
         )
 
     def delete(self, request):
-        target_user_id = request.data.get("user_id") or request.query_params.get("user_id")
-        try:
-            target_user_id = int(target_user_id)
-        except (TypeError, ValueError):
-            return Response({"detail": "user_id must be a valid integer."}, status=status.HTTP_400_BAD_REQUEST)
+        target_user_id = str(
+            request.data.get("user_id") or request.query_params.get("user_id") or ""
+        ).strip()
+        if not target_user_id:
+            return Response({"detail": "user_id is required."}, status=status.HTTP_400_BAD_REQUEST)
         try:
             _follow_collection().delete_one({"follower_user_id": request.user.pk, "followed_user_id": target_user_id})
         except Exception:
