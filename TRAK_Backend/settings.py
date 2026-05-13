@@ -285,6 +285,23 @@ GITHUB_REDIRECT_URI = os.environ.get(
     "http://127.0.0.1:8000/api/auth/social/github/callback/",
 ).strip()
 
+FACEBOOK_CLIENT_ID = os.environ.get("FACEBOOK_CLIENT_ID", "").strip()
+FACEBOOK_CLIENT_SECRET = os.environ.get("FACEBOOK_CLIENT_SECRET", "").strip()
+FACEBOOK_REDIRECT_URI = os.environ.get(
+    "FACEBOOK_REDIRECT_URI",
+    "http://127.0.0.1:8000/api/auth/social/facebook/callback/",
+).strip()
+
+# Sign in with Apple (OAuth web flow). APPLE_PRIVATE_KEY = .p8 contents with \n for newlines.
+APPLE_CLIENT_ID = os.environ.get("APPLE_CLIENT_ID", "").strip()
+APPLE_TEAM_ID = os.environ.get("APPLE_TEAM_ID", "").strip()
+APPLE_KEY_ID = os.environ.get("APPLE_KEY_ID", "").strip()
+APPLE_PRIVATE_KEY = os.environ.get("APPLE_PRIVATE_KEY", "").strip()
+APPLE_REDIRECT_URI = os.environ.get(
+    "APPLE_REDIRECT_URI",
+    "http://127.0.0.1:8000/api/auth/social/apple/callback/",
+).strip()
+
 if not DEBUG:
     SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
     SESSION_COOKIE_SECURE = True

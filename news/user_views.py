@@ -6,6 +6,7 @@ from rest_framework.views import APIView
 
 from news.services import article_query
 from news.mongo_db import (
+    article_reports_collection,
     bookmarks_collection,
     chatbot_history_collection,
     raw_collection,
@@ -53,6 +54,14 @@ class ExploreFeedView(APIView):
         return Response(page)
 
 
+class UserKeywordsView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        keywords = article_query.list_user_keywords(request.user)
+        return Response({"keywords": keywords})
+
+
 class TrackKeywordsView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
@@ -64,6 +73,25 @@ class TrackKeywordsView(APIView):
             return Response({"detail": "keywords must be a list"}, status=status.HTTP_400_BAD_REQUEST)
         payload = article_query.upsert_user_keywords(request.user, keywords)
         return Response(payload, status=status.HTTP_200_OK)
+
+
+class ArticleReportView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request):
+        article_id = str(request.data.get("article_id") or "").strip()
+        url = str(request.data.get("url") or "").strip()
+        reason = str(request.data.get("reason") or "flag").strip() or "flag"
+        col = article_reports_collection()
+        doc = {
+            "user_id": request.user.pk,
+            "article_id": article_id or None,
+            "url": url or None,
+            "reason": reason[:2000],
+            "created_at": datetime.now(timezone.utc),
+        }
+        col.insert_one(doc)
+        return Response({"detail": "Report submitted."}, status=status.HTTP_201_CREATED)
 
 
 class ArticleDetailView(APIView):
@@ -236,6 +264,13 @@ class BookmarkDeleteView(APIView):
         return Response({"detail": "Bookmark removed."}, status=status.HTTP_200_OK)
 
 
+def _reaction_totals_for_article(article_id: str) -> tuple[int, int]:
+    coll = reactions_collection()
+    likes = coll.count_documents({"article_id": article_id, "reaction": "like"})
+    dislikes = coll.count_documents({"article_id": article_id, "reaction": "dislike"})
+    return likes, dislikes
+
+
 class ReactionView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
@@ -264,10 +299,28 @@ class ReactionView(APIView):
             return Response({"detail": "article_id is required."}, status=status.HTTP_400_BAD_REQUEST)
         if reaction == "none":
             reactions_collection().delete_one({"user_id": request.user.pk, "article_id": article_id})
-            return Response({"detail": "Reaction removed."}, status=status.HTTP_200_OK)
+            likes, dislikes = _reaction_totals_for_article(article_id)
+            return Response(
+                {
+                    "detail": "Reaction removed.",
+                    "reaction": "none",
+                    "like_count": likes,
+                    "dislike_count": dislikes,
+                },
+                status=status.HTTP_200_OK,
+            )
         reactions_collection().update_one(
             {"user_id": request.user.pk, "article_id": article_id},
             {"$set": {"reaction": reaction, "updated_at": datetime.now(timezone.utc)}},
             upsert=True,
         )
-        return Response({"detail": "Reaction saved.", "reaction": reaction}, status=status.HTTP_200_OK)
+        likes, dislikes = _reaction_totals_for_article(article_id)
+        return Response(
+            {
+                "detail": "Reaction saved.",
+                "reaction": reaction,
+                "like_count": likes,
+                "dislike_count": dislikes,
+            },
+            status=status.HTTP_200_OK,
+        )

@@ -1,8 +1,10 @@
+import base64
 import logging
 import os
 import random
 import re
 import secrets
+import time
 import urllib.parse
 import urllib.request
 import urllib.error
@@ -23,10 +25,10 @@ from rest_framework.views import APIView
 from rest_framework_simplejwt.tokens import RefreshToken
 from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
 
-from .password_reset_utils import build_reset_url, send_password_reset_email
 from .serializers import (
     CustomTokenObtainPairSerializer,
     PasswordResetConfirmSerializer,
+    PasswordResetOtpConfirmSerializer,
     PasswordResetRequestSerializer,
     RegisterSerializer,
     UserSerializer,
@@ -50,6 +52,10 @@ def _normalize_phone(phone: str) -> str:
 
 def _otp_cache_key(channel: str, identity: str) -> str:
     return f"auth:otp:{channel}:{identity.lower()}"
+
+
+def _pwreset_otp_key(email: str) -> str:
+    return f"auth:pwreset_otp:{(email or '').strip().lower()}"
 
 
 def _social_state_cache_key(state: str) -> str:
@@ -208,6 +214,93 @@ def _exchange_github_code(code: str) -> str:
     raise ValueError("GitHub account did not return an email")
 
 
+def _exchange_facebook_code(code: str) -> str:
+    params = {
+        "client_id": getattr(settings, "FACEBOOK_CLIENT_ID", ""),
+        "redirect_uri": getattr(settings, "FACEBOOK_REDIRECT_URI", ""),
+        "client_secret": getattr(settings, "FACEBOOK_CLIENT_SECRET", ""),
+        "code": code,
+    }
+    url = "https://graph.facebook.com/v21.0/oauth/access_token?" + urllib.parse.urlencode(params)
+    try:
+        with urllib.request.urlopen(url, timeout=25) as resp:
+            token_payload = json.loads(resp.read().decode("utf-8") or "{}")
+    except urllib.error.HTTPError as exc:
+        body = exc.read().decode("utf-8", errors="replace")
+        raise ValueError(f"Facebook token exchange failed: {body}") from exc
+    access_token = token_payload.get("access_token")
+    if not access_token:
+        raise ValueError("Facebook token exchange failed")
+    me_url = "https://graph.facebook.com/me?fields=id,email&access_token=" + urllib.parse.quote(access_token)
+    with urllib.request.urlopen(me_url, timeout=25) as resp:
+        me = json.loads(resp.read().decode("utf-8") or "{}")
+    email = me.get("email")
+    if not email:
+        raise ValueError("Facebook did not return email — add email permission in Meta app settings.")
+    return str(email).strip().lower()
+
+
+def _apple_client_secret_jwt() -> str:
+    import jwt
+
+    team_id = getattr(settings, "APPLE_TEAM_ID", "").strip()
+    key_id = getattr(settings, "APPLE_KEY_ID", "").strip()
+    client_id = getattr(settings, "APPLE_CLIENT_ID", "").strip()
+    raw_key = getattr(settings, "APPLE_PRIVATE_KEY", "").strip()
+    if not (team_id and key_id and client_id and raw_key):
+        raise ValueError("Apple Sign-In is not configured (APPLE_TEAM_ID, APPLE_KEY_ID, APPLE_CLIENT_ID, APPLE_PRIVATE_KEY).")
+    private_key = raw_key.replace("\\n", "\n")
+    now = int(time.time())
+    payload = {
+        "iss": team_id,
+        "iat": now,
+        "exp": now + 3600 * 24 * 1,
+        "aud": "https://appleid.apple.com",
+        "sub": client_id,
+    }
+    headers = {"kid": key_id, "alg": "ES256"}
+    return jwt.encode(payload, private_key, algorithm="ES256", headers=headers)
+
+
+def _exchange_apple_code(code: str) -> str:
+    client_id = getattr(settings, "APPLE_CLIENT_ID", "").strip()
+    redirect_uri = getattr(settings, "APPLE_REDIRECT_URI", "").strip()
+    client_secret = _apple_client_secret_jwt()
+    body = urllib.parse.urlencode(
+        {
+            "client_id": client_id,
+            "client_secret": client_secret,
+            "code": code,
+            "grant_type": "authorization_code",
+            "redirect_uri": redirect_uri,
+        }
+    ).encode("utf-8")
+    req = urllib.request.Request(
+        "https://appleid.apple.com/auth/token",
+        data=body,
+        method="POST",
+        headers={"Content-Type": "application/x-www-form-urlencoded"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=25) as resp:
+            tok = json.loads(resp.read().decode("utf-8") or "{}")
+    except urllib.error.HTTPError as exc:
+        err = exc.read().decode("utf-8", errors="replace")
+        raise ValueError(f"Apple token exchange failed: {err}") from exc
+    id_token = tok.get("id_token")
+    if not id_token:
+        raise ValueError("Apple response missing id_token")
+    parts = id_token.split(".")
+    if len(parts) < 2:
+        raise ValueError("Invalid Apple id_token")
+    pad = "=" * (-len(parts[1]) % 4)
+    payload = json.loads(base64.urlsafe_b64decode(parts[1] + pad).decode("utf-8"))
+    email = payload.get("email")
+    if not email:
+        raise ValueError("Apple did not include email (first sign-in only includes email in id_token).")
+    return str(email).strip().lower()
+
+
 def _build_social_auth_url(provider: str, state: str) -> str:
     if provider == "google":
         query = urllib.parse.urlencode(
@@ -231,6 +324,29 @@ def _build_social_auth_url(provider: str, state: str) -> str:
             }
         )
         return f"https://github.com/login/oauth/authorize?{query}"
+    if provider == "facebook":
+        query = urllib.parse.urlencode(
+            {
+                "client_id": getattr(settings, "FACEBOOK_CLIENT_ID", ""),
+                "redirect_uri": getattr(settings, "FACEBOOK_REDIRECT_URI", ""),
+                "scope": "email,public_profile",
+                "state": state,
+                "response_type": "code",
+            }
+        )
+        return f"https://www.facebook.com/v21.0/dialog/oauth?{query}"
+    if provider == "apple":
+        query = urllib.parse.urlencode(
+            {
+                "response_type": "code",
+                "client_id": getattr(settings, "APPLE_CLIENT_ID", ""),
+                "redirect_uri": getattr(settings, "APPLE_REDIRECT_URI", ""),
+                "scope": "name email",
+                "state": state,
+                "response_mode": "query",
+            }
+        )
+        return f"https://appleid.apple.com/auth/authorize?{query}"
     raise ValueError("Unsupported provider")
 
 
@@ -356,6 +472,8 @@ class SocialProvidersView(APIView):
     def get(self, request):
         providers = [
             {"id": "google", "name": "Google", "enabled": bool(getattr(settings, "GOOGLE_CLIENT_ID", ""))},
+            {"id": "apple", "name": "Apple", "enabled": bool(getattr(settings, "APPLE_CLIENT_ID", ""))},
+            {"id": "facebook", "name": "Facebook", "enabled": bool(getattr(settings, "FACEBOOK_CLIENT_ID", ""))},
             {"id": "github", "name": "GitHub", "enabled": bool(getattr(settings, "GITHUB_CLIENT_ID", ""))},
             {"id": "twitter", "name": "Twitter/X", "enabled": False},
         ]
@@ -367,8 +485,12 @@ class SocialStartView(APIView):
 
     def get(self, request, provider: str):
         provider = provider.strip().lower()
-        if provider not in {"google", "github"}:
+        if provider not in {"google", "github", "facebook", "apple"}:
             return Response({"detail": "Unsupported provider"}, status=status.HTTP_400_BAD_REQUEST)
+        if provider == "facebook" and not getattr(settings, "FACEBOOK_CLIENT_ID", "").strip():
+            return Response({"detail": "Facebook OAuth is not configured."}, status=status.HTTP_400_BAD_REQUEST)
+        if provider == "apple" and not getattr(settings, "APPLE_CLIENT_ID", "").strip():
+            return Response({"detail": "Apple Sign-In is not configured."}, status=status.HTTP_400_BAD_REQUEST)
         state = secrets.token_urlsafe(24)
         cache.set(_social_state_cache_key(state), provider, timeout=600)
         try:
@@ -387,7 +509,7 @@ class SocialCallbackView(APIView):
         provider = provider.strip().lower()
         state = str(request.query_params.get("state") or "").strip()
         code = str(request.query_params.get("code") or "").strip()
-        if provider not in {"google", "github"}:
+        if provider not in {"google", "github", "facebook", "apple"}:
             return Response({"detail": "Unsupported provider"}, status=status.HTTP_400_BAD_REQUEST)
         if not state or cache.get(_social_state_cache_key(state)) != provider:
             return Response({"detail": "Invalid social state"}, status=status.HTTP_400_BAD_REQUEST)
@@ -396,7 +518,14 @@ class SocialCallbackView(APIView):
             return Response({"detail": "Missing social auth code"}, status=status.HTTP_400_BAD_REQUEST)
 
         try:
-            email = _exchange_google_code(code) if provider == "google" else _exchange_github_code(code)
+            if provider == "google":
+                email = _exchange_google_code(code)
+            elif provider == "github":
+                email = _exchange_github_code(code)
+            elif provider == "facebook":
+                email = _exchange_facebook_code(code)
+            else:
+                email = _exchange_apple_code(code)
         except Exception as exc:
             logger.exception("Social callback failed for %s", provider)
             return Response({"detail": f"Social login failed: {exc}"}, status=status.HTTP_400_BAD_REQUEST)
@@ -432,6 +561,44 @@ class SocialCompleteView(APIView):
         return Response(payload, status=status.HTTP_200_OK)
 
 
+class FirebaseLoginView(APIView):
+    """POST { id_token } — verify Firebase ID token and return TRAK JWT (get-or-create user by email)."""
+
+    permission_classes = [permissions.AllowAny]
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = "login"
+
+    def post(self, request):
+        id_token = str(request.data.get("id_token") or "").strip()
+        if not id_token:
+            return Response({"detail": "id_token is required."}, status=status.HTTP_400_BAD_REQUEST)
+        try:
+            from firebase_admin import auth as firebase_auth
+
+            decoded = firebase_auth.verify_id_token(id_token)
+        except Exception as exc:
+            logger.exception("Firebase ID token verification failed")
+            return Response({"detail": f"Invalid Firebase token: {exc}"}, status=status.HTTP_400_BAD_REQUEST)
+        email = str(decoded.get("email") or "").strip().lower()
+        if not email:
+            return Response(
+                {"detail": "Firebase token has no email. Ensure the provider returns email to Firebase."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        user = User.objects.filter(email__iexact=email).first()
+        if not user:
+            user = User.objects.create_user(email=email, password=User.objects.make_random_password())
+        refresh = RefreshToken.for_user(user)
+        return Response(
+            {
+                "refresh": str(refresh),
+                "access": str(refresh.access_token),
+                "user": _user_payload(user),
+            },
+            status=status.HTTP_200_OK,
+        )
+
+
 class SocialDemoLoginView(APIView):
     permission_classes = [permissions.AllowAny]
     throttle_classes = [ScopedRateThrottle]
@@ -443,7 +610,7 @@ class SocialDemoLoginView(APIView):
             return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
         provider = str(request.data.get("provider") or "").strip().lower()
         email = str(request.data.get("email") or "").strip().lower()
-        if provider not in {"google", "github", "twitter"}:
+        if provider not in {"google", "github", "twitter", "facebook", "apple"}:
             return Response({"detail": "Unsupported social provider"}, status=status.HTTP_400_BAD_REQUEST)
         if not email or not _is_email(email):
             return Response({"detail": "A valid email is required"}, status=status.HTTP_400_BAD_REQUEST)
@@ -637,7 +804,7 @@ class VerifyContactConfirmView(APIView):
 
 
 class PasswordResetRequestView(APIView):
-    """POST { email } — always returns 200; sends email if user exists."""
+    """POST { email } — generic message; sends a 6-digit OTP to email when account exists."""
 
     permission_classes = [permissions.AllowAny]
     throttle_classes = [ScopedRateThrottle]
@@ -648,19 +815,54 @@ class PasswordResetRequestView(APIView):
         ser.is_valid(raise_exception=True)
         email = ser.validated_data["email"].strip().lower()
         user = User.objects.filter(email__iexact=email).first()
-        reset_preview = None
+        payload: dict = {"detail": "If an account exists for this address, a reset code was sent."}
         if user is not None and user.is_active:
+            otp = f"{random.randint(0, 999999):06d}"
+            cache.set(_pwreset_otp_key(email), otp, timeout=600)
             try:
-                if settings.DEBUG:
-                    reset_url, uid, token = build_reset_url(user)
-                    reset_preview = {"reset_url": reset_url, "uid": uid, "token": token}
-                send_password_reset_email(user)
+                send_mail(
+                    subject="Your TRAK password reset code",
+                    message=(
+                        f"Your TRAK password reset code is: {otp}\n"
+                        "It expires in 10 minutes.\n"
+                        "Enter this code in the app, then choose a new password."
+                    ),
+                    from_email=settings.DEFAULT_FROM_EMAIL,
+                    recipient_list=[email],
+                    fail_silently=False,
+                )
             except Exception:
-                logger.exception("Password reset email failed for %s", email)
-        payload = {"detail": "If an account exists for this address, password reset instructions were sent."}
-        if reset_preview:
-            payload["debug_reset_preview"] = reset_preview
+                logger.exception("Password reset OTP email failed for %s", email)
+            if settings.DEBUG:
+                payload["dev_code"] = otp
         return Response(payload, status=status.HTTP_200_OK)
+
+
+class PasswordResetOtpConfirmView(APIView):
+    """POST { email, code, password, password_confirm } — verify OTP and set new password."""
+
+    permission_classes = [permissions.AllowAny]
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = "password_reset"
+
+    def post(self, request):
+        ser = PasswordResetOtpConfirmSerializer(data=request.data)
+        ser.is_valid(raise_exception=True)
+        email = ser.validated_data["email"].strip().lower()
+        code = str(ser.validated_data["code"] or "").strip()
+        expected = cache.get(_pwreset_otp_key(email))
+        if not expected or expected != code:
+            return Response({"detail": "Invalid or expired reset code."}, status=status.HTTP_400_BAD_REQUEST)
+        user = User.objects.filter(email__iexact=email).first()
+        if not user or not user.is_active:
+            return Response({"detail": "Invalid or expired reset code."}, status=status.HTTP_400_BAD_REQUEST)
+        cache.delete(_pwreset_otp_key(email))
+        user.set_password(ser.validated_data["password"])
+        user.save()
+        return Response(
+            {"detail": "Password has been reset. You can sign in with your new password."},
+            status=status.HTTP_200_OK,
+        )
 
 
 class PasswordResetConfirmView(APIView):
