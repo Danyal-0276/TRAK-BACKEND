@@ -7,7 +7,7 @@ from typing import Any, Optional
 from bson import ObjectId
 from django.contrib.auth import get_user_model
 
-from news.mongo_db import processed_collection, raw_collection, user_keywords_collection
+from news.mongo_db import processed_collection, raw_collection, reactions_collection, user_keywords_collection
 
 User = get_user_model()
 
@@ -92,7 +92,48 @@ def article_to_api_dict(doc: dict, raw_fallback: Optional[dict] = None) -> dict:
         },
         "entities": doc.get("entities") or [],
         "topic_keywords": doc.get("topic_keywords") or [],
+        "like_count": 0,
+        "dislike_count": 0,
     }
+
+
+def hydrate_article_reaction_counts(items: list[dict]) -> None:
+    """Attach like_count / dislike_count (and legacy upvotes) from reactions collection."""
+    if not items:
+        return
+    ids: list[str] = []
+    for it in items:
+        aid = str(it.get("id") or "").strip()
+        if aid:
+            ids.append(aid)
+    if not ids:
+        return
+    coll = reactions_collection()
+    tallies: dict[str, dict[str, int]] = {i: {"likes": 0, "dislikes": 0} for i in ids}
+    try:
+        for row in coll.aggregate(
+            [
+                {"$match": {"article_id": {"$in": ids}}},
+                {"$group": {"_id": {"aid": "$article_id", "r": "$reaction"}, "c": {"$sum": 1}}},
+            ]
+        ):
+            aid = str(row["_id"].get("aid") or "")
+            r = str(row["_id"].get("r") or "")
+            c = int(row.get("c") or 0)
+            if aid not in tallies:
+                tallies[aid] = {"likes": 0, "dislikes": 0}
+            if r == "like":
+                tallies[aid]["likes"] = c
+            elif r == "dislike":
+                tallies[aid]["dislikes"] = c
+    except Exception:
+        return
+    for it in items:
+        aid = str(it.get("id") or "").strip()
+        t = tallies.get(aid, {"likes": 0, "dislikes": 0})
+        it["like_count"] = t["likes"]
+        it["dislike_count"] = t["dislikes"]
+        it["upvotes"] = t["likes"]
 
 
 def get_user_feed(
@@ -137,6 +178,7 @@ def get_user_feed(
                 "credibility_label": None,
             }
             out.append(article_to_api_dict(stub, raw_doc))
+    hydrate_article_reaction_counts(out)
     return out
 
 
@@ -165,12 +207,21 @@ def get_article_by_id(article_id: str, user: User) -> Optional[dict]:
                 "source_key": raw_doc.get("source_key"),
                 "published_at": raw_doc.get("published_at"),
             }
-            return article_to_api_dict(stub, raw_doc)
+            item = article_to_api_dict(stub, raw_doc)
+            hydrate_article_reaction_counts([item])
+            return item
         return None
     url = doc.get("canonical_url") or doc.get("raw_canonical_url")
     if url:
         raw_doc = raw_col.find_one({"canonical_url": url})
-    return article_to_api_dict(doc, raw_doc)
+    item = article_to_api_dict(doc, raw_doc)
+    hydrate_article_reaction_counts([item])
+    return item
+
+
+def list_user_keywords(user: User) -> list[str]:
+    """Return the user's saved feed keywords (lowercased), newest source of truth from Mongo."""
+    return list(_normalize_keywords(user))
 
 
 def upsert_user_keywords(user: User, keywords: list[str]) -> dict[str, Any]:
@@ -353,4 +404,5 @@ def get_explore_feed_page(
             )
             is not None
         )
+    hydrate_article_reaction_counts(out)
     return {"results": out, "next_cursor": next_cursor if has_more else None, "has_more": has_more}

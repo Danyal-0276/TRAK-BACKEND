@@ -260,6 +260,8 @@ class AdminUserDetailView(APIView):
         user = User.objects.filter(pk=user_id).first()
         if not user:
             return Response({"detail": "User not found."}, status=status.HTTP_404_NOT_FOUND)
+        if str(user.role) == str(User.Role.ADMIN):
+            return Response({"detail": "Cannot delete administrator accounts."}, status=status.HTTP_400_BAD_REQUEST)
         user.delete()
         return Response({"detail": "User deleted."}, status=status.HTTP_200_OK)
 

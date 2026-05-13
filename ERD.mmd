@@ -1,0 +1,115 @@
+erDiagram
+    ACCOUNTS_USER {
+      bigint id PK
+      string email UK
+      string role
+      datetime created_at
+      bool is_staff
+      bool is_active
+    }
+
+    AUTH_GROUP {
+      int id PK
+      string name UK
+    }
+
+    AUTH_PERMISSION {
+      int id PK
+      string codename
+      int content_type_id
+    }
+
+    USER_PROFILES {
+      objectid _id PK
+      bigint user_id UK
+      string username
+      string phone
+      bool email_verified
+      bool phone_verified
+    }
+
+    USER_FOLLOWS {
+      objectid _id PK
+      bigint follower_user_id
+      bigint followed_user_id
+    }
+
+    USER_KEYWORDS {
+      objectid _id PK
+      bigint user_id UK
+      string[] keywords
+    }
+
+    USER_PREFERENCES {
+      objectid _id PK
+      bigint user_id UK
+      bool notifications_enabled
+      bool personalization_enabled
+    }
+
+    CHATBOT_HISTORY {
+      objectid _id PK
+      bigint user_id UK
+      object[] messages
+    }
+
+    DEVICE_TOKENS {
+      objectid _id PK
+      bigint user_id
+      string token
+      string platform
+    }
+
+    NOTIFICATIONS {
+      objectid _id PK
+      bigint user_id
+      string type
+      bool read
+      datetime created_at
+    }
+
+    RAW_ARTICLES {
+      objectid _id PK
+      string canonical_url UK
+      string source_key
+      string title
+      string pipeline_status
+    }
+
+    PROCESSED_ARTICLES {
+      objectid _id PK
+      string canonical_url UK
+      string raw_canonical_url
+      string credibility_label
+      string[] topic_keywords
+      datetime processed_at
+    }
+
+    BOOKMARKS {
+      objectid _id PK
+      bigint user_id
+      string article_id
+    }
+
+    REACTIONS {
+      objectid _id PK
+      bigint user_id
+      string article_id
+      string reaction
+    }
+
+    ACCOUNTS_USER ||--o{ AUTH_GROUP : via_user_groups
+    ACCOUNTS_USER ||--o{ AUTH_PERMISSION : via_user_permissions
+
+    ACCOUNTS_USER ||--|| USER_PROFILES : profile
+    ACCOUNTS_USER ||--o| USER_KEYWORDS : keywords
+    ACCOUNTS_USER ||--o| USER_PREFERENCES : preferences
+    ACCOUNTS_USER ||--o| CHATBOT_HISTORY : chatbot
+    ACCOUNTS_USER ||--o{ DEVICE_TOKENS : devices
+    ACCOUNTS_USER ||--o{ NOTIFICATIONS : receives
+    ACCOUNTS_USER ||--o{ BOOKMARKS : saves
+    ACCOUNTS_USER ||--o{ REACTIONS : reacts
+    ACCOUNTS_USER ||--o{ USER_FOLLOWS : follower
+    ACCOUNTS_USER ||--o{ USER_FOLLOWS : followed
+
+    RAW_ARTICLES ||--o| PROCESSED_ARTICLES : processed_from

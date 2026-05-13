@@ -23,8 +23,14 @@ urlpatterns = [
         name="auth-password-reset",
     ),
     path(
+        "password-reset/otp-confirm/",
+        views.PasswordResetOtpConfirmView.as_view(),
+        name="auth-password-reset-otp-confirm",
+    ),
+    path(
         "password-reset/confirm/",
         views.PasswordResetConfirmView.as_view(),
         name="auth-password-reset-confirm",
     ),
+    path("firebase/", views.FirebaseLoginView.as_view(), name="auth-firebase"),
 ]

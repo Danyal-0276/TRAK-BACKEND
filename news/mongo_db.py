@@ -67,6 +67,11 @@ def reactions_collection() -> Collection:
     return get_db()[name]
 
 
+def article_reports_collection() -> Collection:
+    name = getattr(settings, "MONGODB_ARTICLE_REPORTS_COLLECTION", "article_reports")
+    return get_db()[name]
+
+
 def ensure_all_article_indexes() -> None:
     """Idempotent indexes for raw, processed, and user_keywords."""
     from news.scrapers import storage as raw_storage
