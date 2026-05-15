@@ -278,6 +278,8 @@ class AdminSettingsView(APIView):
                 "moderation_mode": str(row.get("moderation_mode") or "review"),
                 "categories": row.get("categories") or [],
                 "connections": row.get("connections") or [],
+                "language": str(row.get("language") or "English"),
+                "timezone": str(row.get("timezone") or "UTC"),
             }
         )
 
@@ -288,6 +290,8 @@ class AdminSettingsView(APIView):
             "moderation_mode",
             "categories",
             "connections",
+            "language",
+            "timezone",
         }
         updates = {k: request.data.get(k) for k in allowed if k in request.data}
         if not updates:

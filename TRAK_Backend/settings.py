@@ -18,10 +18,15 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 
 load_dotenv(dotenv_path=os.path.join(BASE_DIR, ".env"))
 
-MONGODB_URI = os.environ.get("MONGODB_URI", "").strip()
+# Prefer MONGODB_URI_DIRECT when campus/corporate DNS blocks mongodb+srv SRV lookups.
+MONGODB_URI = (
+    os.environ.get("MONGODB_URI_DIRECT", "").strip()
+    or os.environ.get("MONGODB_URI", "").strip()
+)
 if not MONGODB_URI:
     raise RuntimeError(
-        "MONGODB_URI must be set (e.g. mongodb+srv://user:pass@cluster/)."
+        "MONGODB_URI must be set. Use mongodb://127.0.0.1:27017 for local MongoDB, "
+        "or Atlas 'Standard connection string' if mongodb+srv DNS times out."
     )
 
 

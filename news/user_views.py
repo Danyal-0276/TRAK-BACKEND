@@ -54,6 +54,21 @@ class ExploreFeedView(APIView):
         return Response(page)
 
 
+class PlatformCategoriesView(APIView):
+    """Read-only platform categories/connections from admin settings."""
+
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, _request):
+        row = user_preferences_collection().find_one({"scope": "admin_settings"}) or {}
+        return Response(
+            {
+                "categories": row.get("categories") or [],
+                "connections": row.get("connections") or [],
+            }
+        )
+
+
 class UserKeywordsView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
