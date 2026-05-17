@@ -6,7 +6,7 @@ from news.pipeline import orchestrator
 
 
 class Command(BaseCommand):
-    help = "Run AI pipeline on pending raw_articles (credibility, summary stub, NER stub)."
+    help = "Run AI pipeline on pending raw_articles (credibility, summary, NER entities)."
 
     def add_arguments(self, parser):
         parser.add_argument("--limit", type=int, default=20)

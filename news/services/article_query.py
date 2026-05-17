@@ -64,11 +64,32 @@ def _matches_feed_filters(
     return True
 
 
+def _article_full_text(doc: dict, raw_fallback: Optional[dict] = None) -> str:
+    """Full article body for detail views."""
+    raw = raw_fallback or {}
+    return (
+        doc.get("clean_text")
+        or raw.get("body_text")
+        or doc.get("body_text")
+        or ""
+    )
+
+
+def _article_card_summary(doc: dict, raw_fallback: Optional[dict] = None) -> str:
+    """Short summary for feed cards (pipeline extractive summary)."""
+    raw = raw_fallback or {}
+    return doc.get("summary") or raw.get("summary") or ""
+
+
 def article_to_api_dict(doc: dict, raw_fallback: Optional[dict] = None) -> dict:
     """Shape for mobile/web clients."""
     cid = _oid_str(doc)
     title = doc.get("title") or (raw_fallback or {}).get("title") or ""
-    body = doc.get("summary") or doc.get("clean_text") or (raw_fallback or {}).get("body_text") or ""
+    summary = _article_card_summary(doc, raw_fallback)
+    full_text = _article_full_text(doc, raw_fallback)
+    if not summary and full_text:
+        parts = re.split(r"(?<=[.!?])\s+", full_text.strip())
+        summary = " ".join(parts[:2]) if parts else full_text[:400]
     source = doc.get("source_key") or (raw_fallback or {}).get("source_key") or ""
     published = doc.get("published_at") or (raw_fallback or {}).get("published_at")
     if isinstance(published, datetime):
@@ -79,8 +100,10 @@ def article_to_api_dict(doc: dict, raw_fallback: Optional[dict] = None) -> dict:
     return {
         "id": cid,
         "title": title,
-        "excerpt": (body[:280] + "…") if len(body) > 280 else body,
-        "content": body,
+        "summary": summary,
+        "excerpt": summary,
+        "content": full_text,
+        "full_content": full_text,
         "source": source,
         "published_at": published,
         "canonical_url": doc.get("canonical_url") or (raw_fallback or {}).get("canonical_url"),
@@ -167,11 +190,12 @@ def get_user_feed(
     if not out and not keywords and not q:
         # No processed docs yet — surface recent raw articles
         for raw_doc in raw_col.find().sort("fetched_at", -1).limit(limit):
+            body = raw_doc.get("body_text") or ""
             stub = {
                 "_id": raw_doc.get("_id"),
                 "title": raw_doc.get("title"),
-                "summary": (raw_doc.get("body_text") or "")[:500],
-                "clean_text": raw_doc.get("body_text"),
+                "summary": body[:500] if body else "",
+                "clean_text": body,
                 "canonical_url": raw_doc.get("canonical_url"),
                 "source_key": raw_doc.get("source_key"),
                 "published_at": raw_doc.get("published_at"),
