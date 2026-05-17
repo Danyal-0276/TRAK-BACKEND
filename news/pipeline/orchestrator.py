@@ -104,6 +104,22 @@ def process_one_raw(doc: dict) -> dict[str, Any]:
     return {"ok": True, "canonical_url": canonical}
 
 
+def mark_raw_for_reprocess(*, include_failed: bool = True) -> int:
+    """
+    Queue existing raw_articles for another pipeline pass (same processed_articles upsert).
+    Does not create any new MongoDB collection.
+    """
+    col = raw_collection()
+    statuses = ["done"]
+    if include_failed:
+        statuses.append("failed")
+    result = col.update_many(
+        {"pipeline_status": {"$in": statuses}},
+        {"$set": {"pipeline_status": "pending"}, "$unset": {"pipeline_error": ""}},
+    )
+    return int(result.modified_count)
+
+
 def run_batch(limit: int = 10) -> dict[str, Any]:
     col = raw_collection()
     pending = list(
@@ -125,3 +141,29 @@ def run_batch(limit: int = 10) -> dict[str, Any]:
             )
             details.append({"ok": False, "error": str(e), "canonical_url": doc.get("canonical_url")})
     return {"processed_ok": ok, "errors": errors, "details": details}
+
+
+def run_until_empty(*, batch_size: int = 50, max_articles: int = 0) -> dict[str, Any]:
+    """Process all pending raw_articles in batches (upsert into processed_articles only)."""
+    total_ok = 0
+    total_errors = 0
+    batches = 0
+    while True:
+        if max_articles and total_ok + total_errors >= max_articles:
+            break
+        limit = batch_size
+        if max_articles:
+            limit = min(batch_size, max_articles - total_ok - total_errors)
+        result = run_batch(limit=limit)
+        batches += 1
+        total_ok += result["processed_ok"]
+        total_errors += result["errors"]
+        if result["processed_ok"] == 0 and result["errors"] == 0:
+            break
+    pending_left = raw_collection().count_documents({"pipeline_status": "pending"})
+    return {
+        "processed_ok": total_ok,
+        "errors": total_errors,
+        "batches": batches,
+        "pending_remaining": pending_left,
+    }
