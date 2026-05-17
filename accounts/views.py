@@ -572,6 +572,13 @@ class FirebaseLoginView(APIView):
         id_token = str(request.data.get("id_token") or "").strip()
         if not id_token:
             return Response({"detail": "id_token is required."}, status=status.HTTP_400_BAD_REQUEST)
+        from notifications.fcm import _ensure_app
+
+        if _ensure_app() is None:
+            return Response(
+                {"detail": "Firebase is not configured on the server. Set FIREBASE_CREDENTIALS_JSON."},
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
         try:
             from firebase_admin import auth as firebase_auth
 
