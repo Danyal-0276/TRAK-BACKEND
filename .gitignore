@@ -5,6 +5,9 @@ env/
 .env
 .env.*
 !.env.example
+.render_env_batch.json
+firebase-service-account.json
+*-firebase-adminsdk*.json
 
 # Byte-compiled / cache
 __pycache__/

@@ -26,6 +26,15 @@ curl_cffi==0.14.0
 beautifulsoup4>=4.12.0
 feedparser>=6.0.11
 
+# AI pipeline: NER + stopwords (run: python -m spacy download en_core_web_sm)
+spacy>=3.7,<4
+nltk>=3.8,<4
+
+# Summarizer + credibility (Hugging Face)
+torch>=2.2,<3
+transformers>=4.40,<5
+sentencepiece>=0.2,<1
+
 # Optional: FCM push (set FIREBASE_CREDENTIALS_JSON or GOOGLE_APPLICATION_CREDENTIALS)
 firebase-admin>=6.5,<7
 

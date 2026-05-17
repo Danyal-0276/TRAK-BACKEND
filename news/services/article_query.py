@@ -49,6 +49,14 @@ def _doc_haystack(doc: dict, raw_fallback: Optional[dict] = None) -> str:
     return " ".join(parts).lower()
 
 
+def _keyword_matches_hay(keyword: str, hay: str) -> bool:
+    k = str(keyword or "").strip().lower()
+    if len(k) < 2:
+        return False
+    variants = {k, k.replace(" ", "-"), k.replace("-", " ")}
+    return any(len(v) >= 2 and v in hay for v in variants)
+
+
 def _matches_feed_filters(
     doc: dict,
     raw_fallback: Optional[dict],
@@ -56,7 +64,7 @@ def _matches_feed_filters(
     search_q: str,
 ) -> bool:
     hay = _doc_haystack(doc, raw_fallback)
-    if user_keywords and not any(k in hay for k in user_keywords):
+    if user_keywords and not any(_keyword_matches_hay(k, hay) for k in user_keywords):
         return False
     q = (search_q or "").strip().lower()
     if q and q not in hay:
@@ -64,11 +72,32 @@ def _matches_feed_filters(
     return True
 
 
+def _article_full_text(doc: dict, raw_fallback: Optional[dict] = None) -> str:
+    """Full article body for detail views."""
+    raw = raw_fallback or {}
+    return (
+        doc.get("clean_text")
+        or raw.get("body_text")
+        or doc.get("body_text")
+        or ""
+    )
+
+
+def _article_card_summary(doc: dict, raw_fallback: Optional[dict] = None) -> str:
+    """Short summary for feed cards (pipeline extractive summary)."""
+    raw = raw_fallback or {}
+    return doc.get("summary") or raw.get("summary") or ""
+
+
 def article_to_api_dict(doc: dict, raw_fallback: Optional[dict] = None) -> dict:
     """Shape for mobile/web clients."""
     cid = _oid_str(doc)
     title = doc.get("title") or (raw_fallback or {}).get("title") or ""
-    body = doc.get("summary") or doc.get("clean_text") or (raw_fallback or {}).get("body_text") or ""
+    summary = _article_card_summary(doc, raw_fallback)
+    full_text = _article_full_text(doc, raw_fallback)
+    if not summary and full_text:
+        parts = re.split(r"(?<=[.!?])\s+", full_text.strip())
+        summary = " ".join(parts[:2]) if parts else full_text[:400]
     source = doc.get("source_key") or (raw_fallback or {}).get("source_key") or ""
     published = doc.get("published_at") or (raw_fallback or {}).get("published_at")
     if isinstance(published, datetime):
@@ -79,8 +108,10 @@ def article_to_api_dict(doc: dict, raw_fallback: Optional[dict] = None) -> dict:
     return {
         "id": cid,
         "title": title,
-        "excerpt": (body[:280] + "…") if len(body) > 280 else body,
-        "content": body,
+        "summary": summary,
+        "excerpt": summary,
+        "content": full_text,
+        "full_content": full_text,
         "source": source,
         "published_at": published,
         "canonical_url": doc.get("canonical_url") or (raw_fallback or {}).get("canonical_url"),
@@ -149,6 +180,9 @@ def get_user_feed(
     """
     keywords = _normalize_keywords(user)
     q = (search_q or "").strip()
+    if not keywords and not q:
+        return []
+
     proc = processed_collection()
     scan = limit * 4 if (keywords or q) else limit
     cursor = proc.find().sort("processed_at", -1).limit(max(scan, limit))
@@ -164,20 +198,6 @@ def get_user_feed(
         out.append(article_to_api_dict(doc, raw_doc))
         if len(out) >= limit:
             break
-    if not out and not keywords and not q:
-        # No processed docs yet — surface recent raw articles
-        for raw_doc in raw_col.find().sort("fetched_at", -1).limit(limit):
-            stub = {
-                "_id": raw_doc.get("_id"),
-                "title": raw_doc.get("title"),
-                "summary": (raw_doc.get("body_text") or "")[:500],
-                "clean_text": raw_doc.get("body_text"),
-                "canonical_url": raw_doc.get("canonical_url"),
-                "source_key": raw_doc.get("source_key"),
-                "published_at": raw_doc.get("published_at"),
-                "credibility_label": None,
-            }
-            out.append(article_to_api_dict(stub, raw_doc))
     hydrate_article_reaction_counts(out)
     return out
 

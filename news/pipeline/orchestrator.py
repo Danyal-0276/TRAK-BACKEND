@@ -1,6 +1,6 @@
 """
 Process raw_articles with pipeline_status=pending → processed_articles + done/failed.
-Stages: clean text → credibility → lightweight extractive summary stub → NER stub.
+Stages: clean text → credibility → BART summary (HF) → NER (names/places/orgs).
 """
 
 from __future__ import annotations
@@ -13,14 +13,25 @@ from typing import Any
 from news.credibility.inference import predict_credibility
 from news.mongo_db import processed_collection, raw_collection
 from news.pipeline.keywords import extract_topic_keywords
+from news.pipeline.ner import extract_entities, ner_model_id
+from news.summarization.inference import summarize_text
 
 
 def clean_text(text: str) -> str:
+    """Clean HTML/URLs; keep paragraph breaks as blank lines for display."""
     text = text or ""
     text = re.sub(r"<[^>]+>", " ", text)
     text = re.sub(r"http\S+", "", text)
-    text = re.sub(r"\s+", " ", text).strip()
-    return text
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
+    paragraphs: list[str] = []
+    for block in re.split(r"\n\s*\n+", text):
+        line = re.sub(r"[ \t]+", " ", block)
+        line = re.sub(r"\n+", " ", line).strip()
+        if line:
+            paragraphs.append(line)
+    if paragraphs:
+        return "\n\n".join(paragraphs)
+    return re.sub(r"\s+", " ", text).strip()
 
 
 def normalize_for_matching(text: str) -> str:
@@ -45,23 +56,6 @@ def simple_tokens(text: str, max_tokens: int = 400) -> list[str]:
     return out
 
 
-def extractive_summary(text: str, max_sentences: int = 2) -> str:
-    parts = re.split(r"(?<=[.!?])\s+", text)
-    return " ".join(parts[:max_sentences]) if parts else text[:400]
-
-
-def stub_ner(text: str) -> list[dict[str, Any]]:
-    """Placeholder entities (replace with real NER later)."""
-    caps = re.findall(r"\b[A-Z][a-z]+(?:\s+[A-Z][a-z]+)*\b", text[:2000])
-    seen = set()
-    out = []
-    for w in caps[:12]:
-        if w not in seen and len(w) > 2:
-            seen.add(w)
-            out.append({"text": w, "label": "MISC"})
-    return out
-
-
 def process_one_raw(doc: dict) -> dict[str, Any]:
     canonical = doc.get("canonical_url") or ""
     body = doc.get("body_text") or ""
@@ -71,8 +65,9 @@ def process_one_raw(doc: dict) -> dict[str, Any]:
     normalized_text = normalize_for_matching(combined)
     normalized_terms = simple_tokens(combined)
     cred = predict_credibility(cleaned)
-    summary = extractive_summary(cleaned)
-    entities = stub_ner(cleaned)
+    sum_result = summarize_text(cleaned, title=title)
+    summary = sum_result["summary"]
+    entities = extract_entities(cleaned, title=title)
     topic_keywords = extract_topic_keywords(cleaned, title, summary, entities)
     published_at = doc.get("published_at")
     now = datetime.now(timezone.utc)
@@ -91,7 +86,12 @@ def process_one_raw(doc: dict) -> dict[str, Any]:
         "topic_keywords": topic_keywords,
         "processed_at": now,
         "language": "en",
-        "model_versions": {"credibility": cred.get("credibility_model_id"), "ner": "stub-1"},
+        "model_versions": {
+            "credibility": cred.get("credibility_model_id"),
+            "ner": ner_model_id(),
+            "summarizer": sum_result.get("summarizer_model_id"),
+            "summarizer_mode": sum_result.get("summarizer_mode"),
+        },
         **cred,
     }
 
@@ -104,6 +104,22 @@ def process_one_raw(doc: dict) -> dict[str, Any]:
     )
 
     return {"ok": True, "canonical_url": canonical}
+
+
+def mark_raw_for_reprocess(*, include_failed: bool = True) -> int:
+    """
+    Queue existing raw_articles for another pipeline pass (same processed_articles upsert).
+    Does not create any new MongoDB collection.
+    """
+    col = raw_collection()
+    statuses = ["done"]
+    if include_failed:
+        statuses.append("failed")
+    result = col.update_many(
+        {"pipeline_status": {"$in": statuses}},
+        {"$set": {"pipeline_status": "pending"}, "$unset": {"pipeline_error": ""}},
+    )
+    return int(result.modified_count)
 
 
 def run_batch(limit: int = 10) -> dict[str, Any]:
@@ -127,3 +143,29 @@ def run_batch(limit: int = 10) -> dict[str, Any]:
             )
             details.append({"ok": False, "error": str(e), "canonical_url": doc.get("canonical_url")})
     return {"processed_ok": ok, "errors": errors, "details": details}
+
+
+def run_until_empty(*, batch_size: int = 50, max_articles: int = 0) -> dict[str, Any]:
+    """Process all pending raw_articles in batches (upsert into processed_articles only)."""
+    total_ok = 0
+    total_errors = 0
+    batches = 0
+    while True:
+        if max_articles and total_ok + total_errors >= max_articles:
+            break
+        limit = batch_size
+        if max_articles:
+            limit = min(batch_size, max_articles - total_ok - total_errors)
+        result = run_batch(limit=limit)
+        batches += 1
+        total_ok += result["processed_ok"]
+        total_errors += result["errors"]
+        if result["processed_ok"] == 0 and result["errors"] == 0:
+            break
+    pending_left = raw_collection().count_documents({"pipeline_status": "pending"})
+    return {
+        "processed_ok": total_ok,
+        "errors": total_errors,
+        "batches": batches,
+        "pending_remaining": pending_left,
+    }
