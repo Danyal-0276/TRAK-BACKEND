@@ -1,6 +1,7 @@
 from django.core.management.base import BaseCommand
 
 from news.credibility.inference import preload_credibility_model
+from news.summarization.inference import preload_summarizer_model
 from news.mongo_db import ensure_all_article_indexes, processed_collection, raw_collection
 from news.pipeline import orchestrator
 
@@ -8,7 +9,7 @@ from news.pipeline import orchestrator
 class Command(BaseCommand):
     help = (
         "Run AI pipeline on pending raw_articles → upsert processed_articles "
-        "(summary, clean_text, spaCy NER, topic_keywords). No extra collections."
+        "(BART summary, clean_text, spaCy NER, topic_keywords). No extra collections."
     )
 
     def add_arguments(self, parser):
@@ -46,8 +47,10 @@ class Command(BaseCommand):
             self.stdout.write(self.style.NOTICE(f"Queued {n} raw article(s) for reprocess."))
 
         if not options["no_preload_model"]:
-            info = preload_credibility_model()
-            self.stdout.write(f"Credibility loader: {info}")
+            cred_info = preload_credibility_model()
+            sum_info = preload_summarizer_model()
+            self.stdout.write(f"Credibility loader: {cred_info}")
+            self.stdout.write(f"Summarizer loader: {sum_info}")
 
         if options["all"]:
             result = orchestrator.run_until_empty(batch_size=max(1, options["batch_size"]))

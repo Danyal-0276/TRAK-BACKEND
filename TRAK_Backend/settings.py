@@ -340,6 +340,12 @@ MONGODB_REACTIONS_COLLECTION = os.environ.get("MONGODB_REACTIONS_COLLECTION", "r
 CREDIBILITY_MODEL_PATH = os.environ.get("CREDIBILITY_MODEL_PATH", "").strip() or None
 CREDIBILITY_CONFIDENCE_THRESHOLD = float(os.environ.get("CREDIBILITY_CONFIDENCE_THRESHOLD", "0.6"))
 
+# BART news summarizer (Hugging Face hub id or local saved model directory)
+SUMMARIZER_MODEL_ID = os.environ.get("SUMMARIZER_MODEL_ID", "daniB2112/bart-large-cnn-news-summarizer").strip()
+SUMMARIZER_ENABLED = os.environ.get("SUMMARIZER_ENABLED", "true").strip()
+SUMMARIZER_MAX_INPUT_CHARS = int(os.environ.get("SUMMARIZER_MAX_INPUT_CHARS", "4000"))
+SUMMARIZER_MAX_NEW_TOKENS = int(os.environ.get("SUMMARIZER_MAX_NEW_TOKENS", "128"))
+
 # Many news sites sit behind CDNs that block non-browser user-agents. Use a real
 # browser token plus a project suffix so traffic is identifiable.
 SCRAPER_USER_AGENT = os.environ.get(

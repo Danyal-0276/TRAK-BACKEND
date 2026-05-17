@@ -1,6 +1,6 @@
 """
 Process raw_articles with pipeline_status=pending → processed_articles + done/failed.
-Stages: clean text → credibility → extractive summary → NER (names/places/orgs).
+Stages: clean text → credibility → BART summary (HF) → NER (names/places/orgs).
 """
 
 from __future__ import annotations
@@ -14,6 +14,7 @@ from news.credibility.inference import predict_credibility
 from news.mongo_db import processed_collection, raw_collection
 from news.pipeline.keywords import extract_topic_keywords
 from news.pipeline.ner import extract_entities, ner_model_id
+from news.summarization.inference import summarize_text
 
 
 def clean_text(text: str) -> str:
@@ -55,11 +56,6 @@ def simple_tokens(text: str, max_tokens: int = 400) -> list[str]:
     return out
 
 
-def extractive_summary(text: str, max_sentences: int = 2) -> str:
-    parts = re.split(r"(?<=[.!?])\s+", text)
-    return " ".join(parts[:max_sentences]) if parts else text[:400]
-
-
 def process_one_raw(doc: dict) -> dict[str, Any]:
     canonical = doc.get("canonical_url") or ""
     body = doc.get("body_text") or ""
@@ -69,7 +65,8 @@ def process_one_raw(doc: dict) -> dict[str, Any]:
     normalized_text = normalize_for_matching(combined)
     normalized_terms = simple_tokens(combined)
     cred = predict_credibility(cleaned)
-    summary = extractive_summary(cleaned)
+    sum_result = summarize_text(cleaned, title=title)
+    summary = sum_result["summary"]
     entities = extract_entities(cleaned, title=title)
     topic_keywords = extract_topic_keywords(cleaned, title, summary, entities)
     published_at = doc.get("published_at")
@@ -89,7 +86,12 @@ def process_one_raw(doc: dict) -> dict[str, Any]:
         "topic_keywords": topic_keywords,
         "processed_at": now,
         "language": "en",
-        "model_versions": {"credibility": cred.get("credibility_model_id"), "ner": ner_model_id()},
+        "model_versions": {
+            "credibility": cred.get("credibility_model_id"),
+            "ner": ner_model_id(),
+            "summarizer": sum_result.get("summarizer_model_id"),
+            "summarizer_mode": sum_result.get("summarizer_mode"),
+        },
         **cred,
     }
 

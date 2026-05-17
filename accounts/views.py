@@ -66,6 +66,11 @@ def _social_ticket_cache_key(ticket: str) -> str:
     return f"auth:social:ticket:{ticket}"
 
 
+def _random_user_password() -> str:
+    """Placeholder password for OAuth/Firebase users (they sign in via provider, not password)."""
+    return secrets.token_urlsafe(32)
+
+
 def _profile_collection():
     global _profile_indexes_ready
     col = get_db()["user_profiles"]
@@ -417,7 +422,7 @@ class OtpVerifyView(APIView):
             email = normalized_identity
             user = User.objects.filter(email=email).first()
             if not user:
-                user = User.objects.create_user(email=email, password=User.objects.make_random_password())
+                user = User.objects.create_user(email=email, password=_random_user_password())
         else:
             # Login should bind to an existing profile using this phone number.
             try:
@@ -532,7 +537,7 @@ class SocialCallbackView(APIView):
 
         user = User.objects.filter(email=email).first()
         if not user:
-            user = User.objects.create_user(email=email, password=User.objects.make_random_password())
+            user = User.objects.create_user(email=email, password=_random_user_password())
 
         refresh = RefreshToken.for_user(user)
         ticket = secrets.token_urlsafe(32)
@@ -594,7 +599,7 @@ class FirebaseLoginView(APIView):
             )
         user = User.objects.filter(email__iexact=email).first()
         if not user:
-            user = User.objects.create_user(email=email, password=User.objects.make_random_password())
+            user = User.objects.create_user(email=email, password=_random_user_password())
         refresh = RefreshToken.for_user(user)
         return Response(
             {
@@ -624,7 +629,7 @@ class SocialDemoLoginView(APIView):
 
         user = User.objects.filter(email=email).first()
         if not user:
-            user = User.objects.create_user(email=email, password=User.objects.make_random_password())
+            user = User.objects.create_user(email=email, password=_random_user_password())
         refresh = RefreshToken.for_user(user)
         return Response(
             {
