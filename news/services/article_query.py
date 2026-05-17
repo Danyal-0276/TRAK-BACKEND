@@ -49,6 +49,14 @@ def _doc_haystack(doc: dict, raw_fallback: Optional[dict] = None) -> str:
     return " ".join(parts).lower()
 
 
+def _keyword_matches_hay(keyword: str, hay: str) -> bool:
+    k = str(keyword or "").strip().lower()
+    if len(k) < 2:
+        return False
+    variants = {k, k.replace(" ", "-"), k.replace("-", " ")}
+    return any(len(v) >= 2 and v in hay for v in variants)
+
+
 def _matches_feed_filters(
     doc: dict,
     raw_fallback: Optional[dict],
@@ -56,7 +64,7 @@ def _matches_feed_filters(
     search_q: str,
 ) -> bool:
     hay = _doc_haystack(doc, raw_fallback)
-    if user_keywords and not any(k in hay for k in user_keywords):
+    if user_keywords and not any(_keyword_matches_hay(k, hay) for k in user_keywords):
         return False
     q = (search_q or "").strip().lower()
     if q and q not in hay:
@@ -172,6 +180,9 @@ def get_user_feed(
     """
     keywords = _normalize_keywords(user)
     q = (search_q or "").strip()
+    if not keywords and not q:
+        return []
+
     proc = processed_collection()
     scan = limit * 4 if (keywords or q) else limit
     cursor = proc.find().sort("processed_at", -1).limit(max(scan, limit))
@@ -187,21 +198,6 @@ def get_user_feed(
         out.append(article_to_api_dict(doc, raw_doc))
         if len(out) >= limit:
             break
-    if not out and not keywords and not q:
-        # No processed docs yet — surface recent raw articles
-        for raw_doc in raw_col.find().sort("fetched_at", -1).limit(limit):
-            body = raw_doc.get("body_text") or ""
-            stub = {
-                "_id": raw_doc.get("_id"),
-                "title": raw_doc.get("title"),
-                "summary": body[:500] if body else "",
-                "clean_text": body,
-                "canonical_url": raw_doc.get("canonical_url"),
-                "source_key": raw_doc.get("source_key"),
-                "published_at": raw_doc.get("published_at"),
-                "credibility_label": None,
-            }
-            out.append(article_to_api_dict(stub, raw_doc))
     hydrate_article_reaction_counts(out)
     return out
 
