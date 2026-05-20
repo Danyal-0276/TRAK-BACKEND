@@ -25,6 +25,8 @@ from rest_framework.views import APIView
 from rest_framework_simplejwt.tokens import RefreshToken
 from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
 
+from .decorators import RatelimitedAPIMixin
+from .exceptions import AuthServiceError, BruteForceLockoutError, OtpError
 from .serializers import (
     CustomTokenObtainPairSerializer,
     PasswordResetConfirmSerializer,
@@ -33,6 +35,9 @@ from .serializers import (
     RegisterSerializer,
     UserSerializer,
 )
+from .services.email_validation import EmailValidationService
+from .services.otp_service import OtpPurpose, OtpService
+from .services.security import AuthSecurityService
 from news.mongo_db import get_db
 
 User = get_user_model()
@@ -121,6 +126,20 @@ def _get_profile(user_id: int) -> dict:
     return default
 
 
+def _mark_email_verified(user: User) -> None:
+    if not user.email_verified:
+        user.email_verified = True
+        user.save(update_fields=["email_verified"])
+    try:
+        _profile_collection().update_one(
+            {"user_id": user.pk},
+            {"$set": {"email_verified": True}},
+            upsert=True,
+        )
+    except Exception:
+        logger.exception("Mongo email_verified sync failed for user_id=%s", user.pk)
+
+
 def _user_payload(user: User) -> dict:
     p = _get_profile(user.pk)
     followers_count = 0
@@ -136,10 +155,10 @@ def _user_payload(user: User) -> dict:
         username = (user.email or "").split("@")[0]
     return {
         **UserSerializer(user).data,
+        "email_verified": bool(getattr(user, "email_verified", False) or p.get("email_verified")),
         "full_name": p.get("full_name") or "",
         "username": username,
         "phone": p.get("phone") or "",
-        "email_verified": bool(p.get("email_verified")),
         "phone_verified": bool(p.get("phone_verified")),
         "bio": p.get("bio") or "",
         "avatar_image": p.get("avatar_image") or "",
@@ -355,10 +374,11 @@ def _build_social_auth_url(provider: str, state: str) -> str:
     raise ValueError("Unsupported provider")
 
 
-class OtpRequestView(APIView):
+class OtpRequestView(RatelimitedAPIMixin, APIView):
     permission_classes = [permissions.AllowAny]
     throttle_classes = [ScopedRateThrottle]
-    throttle_scope = "login"
+    throttle_scope = "otp_send"
+    ratelimit_rate = "10/m"
 
     def post(self, request):
         identity = str(request.data.get("identity") or "").strip()
@@ -366,32 +386,40 @@ class OtpRequestView(APIView):
             return Response({"detail": "identity is required"}, status=status.HTTP_400_BAD_REQUEST)
 
         channel = "email" if _is_email(identity) else "phone"
-        normalized_identity = identity.lower() if channel == "email" else _normalize_phone(identity)
-        if channel == "phone" and not normalized_identity:
-            return Response({"detail": "Invalid phone number"}, status=status.HTTP_400_BAD_REQUEST)
-
-        otp = f"{random.randint(0, 999999):06d}"
-        cache.set(_otp_cache_key(channel, normalized_identity), otp, timeout=600)
-
         if channel == "email":
             try:
-                send_mail(
-                    subject="Your TRAK verification code",
-                    message=f"Your TRAK verification code is: {otp}\nIt expires in 10 minutes.",
-                    from_email=settings.DEFAULT_FROM_EMAIL,
-                    recipient_list=[normalized_identity],
-                    fail_silently=False,
+                normalized_identity = EmailValidationService.validate(identity)
+            except AuthServiceError as exc:
+                return Response(
+                    exc.as_validation_dict() if exc.field else {"detail": exc.detail},
+                    status=status.HTTP_400_BAD_REQUEST,
                 )
-            except Exception:
-                logger.exception("Failed sending OTP email to %s", normalized_identity)
-        else:
-            # Free-mode default: expose code in dev response and log on server.
-            # (No paid SMS provider required.)
-            logger.info("TRAK OTP for phone %s is %s", normalized_identity, otp)
+            try:
+                _, dev_code = OtpService.issue(
+                    email=normalized_identity,
+                    purpose=OtpPurpose.LOGIN,
+                    send_email=True,
+                )
+            except AuthServiceError as exc:
+                return Response({"detail": exc.detail}, status=exc.status_code)
+            return Response(
+                {
+                    "detail": "Verification code sent to your email.",
+                    "channel": channel,
+                    "dev_code": dev_code,
+                },
+                status=status.HTTP_200_OK,
+            )
 
+        normalized_identity = _normalize_phone(identity)
+        if not normalized_identity:
+            return Response({"detail": "Invalid phone number"}, status=status.HTTP_400_BAD_REQUEST)
+        otp = OtpService.generate_code()
+        cache.set(_otp_cache_key(channel, normalized_identity), otp, timeout=OtpService.expiry_seconds())
+        logger.info("TRAK OTP for phone %s is %s", normalized_identity, otp)
         return Response(
             {
-                "detail": f"Verification code sent to your {channel}.",
+                "detail": "Verification code sent to your phone.",
                 "channel": channel,
                 "dev_code": otp if settings.DEBUG else None,
             },
@@ -399,10 +427,11 @@ class OtpRequestView(APIView):
         )
 
 
-class OtpVerifyView(APIView):
+class OtpVerifyView(RatelimitedAPIMixin, APIView):
     permission_classes = [permissions.AllowAny]
     throttle_classes = [ScopedRateThrottle]
-    throttle_scope = "login"
+    throttle_scope = "otp_verify"
+    ratelimit_rate = "20/m"
 
     def post(self, request):
         identity = str(request.data.get("identity") or "").strip()
@@ -411,13 +440,41 @@ class OtpVerifyView(APIView):
             return Response({"detail": "identity and code are required"}, status=status.HTTP_400_BAD_REQUEST)
 
         channel = "email" if _is_email(identity) else "phone"
-        normalized_identity = identity.lower() if channel == "email" else _normalize_phone(identity)
-        cache_key = _otp_cache_key(channel, normalized_identity)
-        expected = cache.get(cache_key)
-        if not expected or expected != code:
-            return Response({"detail": "Invalid or expired verification code."}, status=status.HTTP_400_BAD_REQUEST)
+        ip = AuthSecurityService.client_ip(request)
+        if channel == "email":
+            normalized_identity = EmailValidationService.normalize(identity)
+            try:
+                AuthSecurityService.check_otp_verify_allowed(
+                    normalized_identity, OtpPurpose.LOGIN, ip
+                )
+                OtpService.verify(
+                    email=normalized_identity,
+                    purpose=OtpPurpose.LOGIN,
+                    code=code,
+                )
+                AuthSecurityService.clear_otp_verify_failures(
+                    normalized_identity, OtpPurpose.LOGIN, ip
+                )
+            except BruteForceLockoutError as exc:
+                return Response({"detail": exc.detail}, status=exc.status_code)
+            except OtpError as exc:
+                AuthSecurityService.record_otp_verify_failure(
+                    normalized_identity, OtpPurpose.LOGIN, ip
+                )
+                return Response({"detail": exc.detail}, status=exc.status_code)
+            except AuthServiceError as exc:
+                return Response({"detail": exc.detail}, status=exc.status_code)
+        else:
+            normalized_identity = _normalize_phone(identity)
+            cache_key = _otp_cache_key(channel, normalized_identity)
+            expected = cache.get(cache_key)
+            if not expected or expected != code:
+                return Response(
+                    {"detail": "Invalid or expired verification code."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            cache.delete(cache_key)
 
-        cache.delete(cache_key)
         if channel == "email":
             email = normalized_identity
             user = User.objects.filter(email=email).first()
@@ -451,14 +508,7 @@ class OtpVerifyView(APIView):
             except Exception:
                 logger.exception("Mongo update failed during OTP phone verification for user_id=%s", user.pk)
         else:
-            try:
-                _profile_collection().update_one(
-                    {"user_id": user.pk},
-                    {"$set": {"email_verified": True}},
-                    upsert=True,
-                )
-            except Exception:
-                logger.exception("Mongo update failed during OTP email verification for user_id=%s", user.pk)
+            _mark_email_verified(user)
 
         refresh = RefreshToken.for_user(user)
         return Response(
@@ -642,10 +692,11 @@ class SocialDemoLoginView(APIView):
         )
 
 
-class RegisterView(APIView):
+class RegisterView(RatelimitedAPIMixin, APIView):
     permission_classes = [permissions.AllowAny]
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = "register"
+    ratelimit_rate = "10/h"
 
     def post(self, request):
         ser = RegisterSerializer(data=request.data)
@@ -675,22 +726,58 @@ class RegisterView(APIView):
         except Exception:
             # Do not fail account creation if Mongo profile sync is temporarily down.
             logger.exception("Mongo profile sync failed during registration for user_id=%s", user.pk)
+
+        dev_code = None
+        if getattr(settings, "REGISTER_SEND_VERIFICATION_OTP", True):
+            try:
+                _, dev_code = OtpService.issue(
+                    email=user.email,
+                    purpose=OtpPurpose.EMAIL_VERIFICATION,
+                    user=user,
+                    send_email=True,
+                )
+            except Exception:
+                logger.exception("Failed to send registration verification OTP for %s", user.email)
+
         refresh = RefreshToken.for_user(user)
-        return Response(
-            {
-                "refresh": str(refresh),
-                "access": str(refresh.access_token),
-                "user": _user_payload(user),
-            },
-            status=status.HTTP_201_CREATED,
-        )
+        payload = {
+            "refresh": str(refresh),
+            "access": str(refresh.access_token),
+            "user": _user_payload(user),
+            "verification_required": not user.email_verified,
+        }
+        if settings.DEBUG and dev_code:
+            payload["dev_code"] = dev_code
+        return Response(payload, status=status.HTTP_201_CREATED)
 
 
-class LoginView(TokenObtainPairView):
+class LoginView(RatelimitedAPIMixin, TokenObtainPairView):
     permission_classes = [permissions.AllowAny]
     serializer_class = CustomTokenObtainPairSerializer
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = "login"
+    ratelimit_rate = "30/m"
+
+    def post(self, request, *args, **kwargs):
+        raw_email = str(request.data.get("email") or request.data.get("username") or "").strip()
+        ip = AuthSecurityService.client_ip(request)
+        email = raw_email.lower()
+        try:
+            if raw_email:
+                email = EmailValidationService.validate(raw_email)
+        except AuthServiceError:
+            pass
+        try:
+            AuthSecurityService.check_login_allowed(email, ip)
+        except BruteForceLockoutError as exc:
+            return Response({"detail": exc.detail}, status=status.HTTP_429_TOO_MANY_REQUESTS)
+        response = super().post(request, *args, **kwargs)
+        if response.status_code >= 400:
+            if email:
+                AuthSecurityService.record_login_failure(email, ip)
+        else:
+            AuthSecurityService.clear_login_failures(email, ip)
+        return response
 
 
 class ThrottledTokenRefreshView(TokenRefreshView):
@@ -740,10 +827,11 @@ class ProfileView(APIView):
         return Response(_user_payload(request.user), status=status.HTTP_200_OK)
 
 
-class VerifyContactRequestView(APIView):
+class VerifyContactRequestView(RatelimitedAPIMixin, APIView):
     permission_classes = [permissions.IsAuthenticated]
     throttle_classes = [ScopedRateThrottle]
-    throttle_scope = "password_reset"
+    throttle_scope = "otp_send"
+    ratelimit_rate = "10/m"
 
     def post(self, request):
         channel = str(request.data.get("channel") or "").strip().lower()
@@ -752,6 +840,23 @@ class VerifyContactRequestView(APIView):
         profile = _get_profile(request.user.pk)
         if channel == "email":
             identity = request.user.email
+            try:
+                _, dev_code = OtpService.issue(
+                    email=identity,
+                    purpose=OtpPurpose.CONTACT_VERIFY,
+                    user=request.user,
+                    send_email=True,
+                )
+            except AuthServiceError as exc:
+                return Response({"detail": exc.detail}, status=exc.status_code)
+            return Response(
+                {
+                    "detail": "Verification code sent.",
+                    "channel": channel,
+                    "dev_code": dev_code if settings.DEBUG else None,
+                },
+                status=status.HTTP_200_OK,
+            )
         else:
             identity = _normalize_phone(str(request.data.get("phone") or profile.get("phone") or ""))
             if not identity:
@@ -765,28 +870,20 @@ class VerifyContactRequestView(APIView):
                     status=status.HTTP_503_SERVICE_UNAVAILABLE,
                 )
 
-        otp = f"{random.randint(0, 999999):06d}"
-        cache.set(_otp_cache_key(channel, identity), otp, timeout=600)
-        if channel == "email":
-            send_mail(
-                subject="Your TRAK verification code",
-                message=f"Your TRAK verification code is: {otp}\nIt expires in 10 minutes.",
-                from_email=settings.DEFAULT_FROM_EMAIL,
-                recipient_list=[identity],
-                fail_silently=True,
-            )
-        else:
-            logger.info("TRAK verify OTP for phone %s is %s", identity, otp)
+        otp = OtpService.generate_code()
+        cache.set(_otp_cache_key(channel, identity), otp, timeout=OtpService.expiry_seconds())
+        logger.info("TRAK verify OTP for phone %s is %s", identity, otp)
         return Response(
             {"detail": "Verification code sent.", "channel": channel, "dev_code": otp if settings.DEBUG else None},
             status=status.HTTP_200_OK,
         )
 
 
-class VerifyContactConfirmView(APIView):
+class VerifyContactConfirmView(RatelimitedAPIMixin, APIView):
     permission_classes = [permissions.IsAuthenticated]
     throttle_classes = [ScopedRateThrottle]
-    throttle_scope = "password_reset"
+    throttle_scope = "otp_verify"
+    ratelimit_rate = "20/m"
 
     def post(self, request):
         channel = str(request.data.get("channel") or "").strip().lower()
@@ -796,81 +893,117 @@ class VerifyContactConfirmView(APIView):
         if not code:
             return Response({"detail": "code is required"}, status=status.HTTP_400_BAD_REQUEST)
         profile = _get_profile(request.user.pk)
-        identity = request.user.email if channel == "email" else _normalize_phone(str(profile.get("phone") or ""))
-        if not identity:
-            return Response({"detail": "No phone available for verification."}, status=status.HTTP_400_BAD_REQUEST)
-        expected = cache.get(_otp_cache_key(channel, identity))
-        if not expected or expected != code:
-            return Response({"detail": "Invalid or expired verification code."}, status=status.HTTP_400_BAD_REQUEST)
-        cache.delete(_otp_cache_key(channel, identity))
-        field = "email_verified" if channel == "email" else "phone_verified"
-        try:
-            _profile_collection().update_one({"user_id": request.user.pk}, {"$set": {field: True}}, upsert=True)
-        except Exception:
-            logger.exception("Mongo update failed during verify confirm for user_id=%s", request.user.pk)
-            return Response(
-                {"detail": "Profile service is temporarily unavailable. Please try again shortly."},
-                status=status.HTTP_503_SERVICE_UNAVAILABLE,
-            )
+        ip = AuthSecurityService.client_ip(request)
+        if channel == "email":
+            try:
+                AuthSecurityService.check_otp_verify_allowed(
+                    request.user.email, OtpPurpose.CONTACT_VERIFY, ip
+                )
+                OtpService.verify(
+                    email=request.user.email,
+                    purpose=OtpPurpose.CONTACT_VERIFY,
+                    code=code,
+                )
+                AuthSecurityService.clear_otp_verify_failures(
+                    request.user.email, OtpPurpose.CONTACT_VERIFY, ip
+                )
+                _mark_email_verified(request.user)
+            except (BruteForceLockoutError, OtpError, AuthServiceError) as exc:
+                if isinstance(exc, OtpError):
+                    AuthSecurityService.record_otp_verify_failure(
+                        request.user.email, OtpPurpose.CONTACT_VERIFY, ip
+                    )
+                status_code = getattr(exc, "status_code", status.HTTP_400_BAD_REQUEST)
+                body = exc.as_validation_dict() if hasattr(exc, "as_validation_dict") and exc.field else {"detail": exc.detail}
+                return Response(body, status=status_code)
+        else:
+            identity = _normalize_phone(str(profile.get("phone") or ""))
+            if not identity:
+                return Response({"detail": "No phone available for verification."}, status=status.HTTP_400_BAD_REQUEST)
+            expected = cache.get(_otp_cache_key(channel, identity))
+            if not expected or expected != code:
+                return Response({"detail": "Invalid or expired verification code."}, status=status.HTTP_400_BAD_REQUEST)
+            cache.delete(_otp_cache_key(channel, identity))
+            try:
+                _profile_collection().update_one(
+                    {"user_id": request.user.pk},
+                    {"$set": {"phone_verified": True}},
+                    upsert=True,
+                )
+            except Exception:
+                logger.exception("Mongo update failed during verify confirm for user_id=%s", request.user.pk)
+                return Response(
+                    {"detail": "Profile service is temporarily unavailable. Please try again shortly."},
+                    status=status.HTTP_503_SERVICE_UNAVAILABLE,
+                )
+        request.user.refresh_from_db()
         return Response(_user_payload(request.user), status=status.HTTP_200_OK)
 
 
-class PasswordResetRequestView(APIView):
+class PasswordResetRequestView(RatelimitedAPIMixin, APIView):
     """POST { email } — generic message; sends a 6-digit OTP to email when account exists."""
 
     permission_classes = [permissions.AllowAny]
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = "password_reset"
+    ratelimit_rate = "5/h"
 
     def post(self, request):
         ser = PasswordResetRequestSerializer(data=request.data)
         ser.is_valid(raise_exception=True)
-        email = ser.validated_data["email"].strip().lower()
+        email = ser.validated_data["email"]
         user = User.objects.filter(email__iexact=email).first()
         payload: dict = {"detail": "If an account exists for this address, a reset code was sent."}
         if user is not None and user.is_active:
-            otp = f"{random.randint(0, 999999):06d}"
-            cache.set(_pwreset_otp_key(email), otp, timeout=600)
             try:
-                send_mail(
-                    subject="Your TRAK password reset code",
-                    message=(
-                        f"Your TRAK password reset code is: {otp}\n"
-                        "It expires in 10 minutes.\n"
-                        "Enter this code in the app, then choose a new password."
-                    ),
-                    from_email=settings.DEFAULT_FROM_EMAIL,
-                    recipient_list=[email],
-                    fail_silently=False,
+                _, dev_code = OtpService.issue(
+                    email=email,
+                    purpose=OtpPurpose.PASSWORD_RESET,
+                    user=user,
+                    send_email=True,
                 )
+                if settings.DEBUG and dev_code:
+                    payload["dev_code"] = dev_code
             except Exception:
                 logger.exception("Password reset OTP email failed for %s", email)
-            if settings.DEBUG:
-                payload["dev_code"] = otp
         return Response(payload, status=status.HTTP_200_OK)
 
 
-class PasswordResetOtpConfirmView(APIView):
+class PasswordResetOtpConfirmView(RatelimitedAPIMixin, APIView):
     """POST { email, code, password, password_confirm } — verify OTP and set new password."""
 
     permission_classes = [permissions.AllowAny]
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = "password_reset"
+    ratelimit_rate = "10/h"
 
     def post(self, request):
         ser = PasswordResetOtpConfirmSerializer(data=request.data)
         ser.is_valid(raise_exception=True)
-        email = ser.validated_data["email"].strip().lower()
-        code = str(ser.validated_data["code"] or "").strip()
-        expected = cache.get(_pwreset_otp_key(email))
-        if not expected or expected != code:
+        email = ser.validated_data["email"]
+        code = ser.validated_data["code"]
+        ip = AuthSecurityService.client_ip(request)
+        try:
+            AuthSecurityService.check_otp_verify_allowed(
+                email, OtpPurpose.PASSWORD_RESET, ip
+            )
+            OtpService.verify(email=email, purpose=OtpPurpose.PASSWORD_RESET, code=code)
+            AuthSecurityService.clear_otp_verify_failures(
+                email, OtpPurpose.PASSWORD_RESET, ip
+            )
+        except BruteForceLockoutError as exc:
+            return Response({"detail": exc.detail}, status=exc.status_code)
+        except OtpError:
+            AuthSecurityService.record_otp_verify_failure(
+                email, OtpPurpose.PASSWORD_RESET, ip
+            )
             return Response({"detail": "Invalid or expired reset code."}, status=status.HTTP_400_BAD_REQUEST)
         user = User.objects.filter(email__iexact=email).first()
         if not user or not user.is_active:
             return Response({"detail": "Invalid or expired reset code."}, status=status.HTTP_400_BAD_REQUEST)
-        cache.delete(_pwreset_otp_key(email))
         user.set_password(ser.validated_data["password"])
         user.save()
+        AuthSecurityService.clear_login_failures(email, ip)
         return Response(
             {"detail": "Password has been reset. You can sign in with your new password."},
             status=status.HTTP_200_OK,

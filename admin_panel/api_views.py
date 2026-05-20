@@ -12,7 +12,7 @@ from rest_framework import permissions, status
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from accounts.permissions import IsAdminRole
+from accounts.permissions import IsAdminRole, IsSuperAdminRole
 from news.mongo_db import notifications_collection, processed_collection, raw_collection, user_preferences_collection
 from news.pipeline import orchestrator
 from notifications.realtime import fanout_notification
@@ -213,28 +213,52 @@ class AdminModelMetricsView(APIView):
         return Response(data, status=status.HTTP_200_OK)
 
 
+def _serialize_admin_user(u: User) -> dict:
+    return {
+        "id": str(u.pk),
+        "email": u.email,
+        "role": u.role,
+        "is_active": bool(u.is_active),
+        "is_super_admin": bool(getattr(u, "is_super_admin", False)),
+        "created_at": u.created_at,
+    }
+
+
 class AdminUsersView(APIView):
     permission_classes = [permissions.IsAuthenticated, IsAdminRole]
 
     def get(self, request):
         q = str(request.query_params.get("q") or "").strip().lower()
+        role_filter = str(request.query_params.get("role") or "all").strip().lower()
         users = User.objects.all().order_by("-created_at")
+        if role_filter in {User.Role.ADMIN, User.Role.USER}:
+            users = users.filter(role=role_filter)
         if q:
             users = users.filter(email__icontains=q)
-        return Response(
-            {
-                "results": [
-                    {
-                        "id": str(u.pk),
-                        "email": u.email,
-                        "role": u.role,
-                        "is_active": bool(u.is_active),
-                        "created_at": u.created_at,
-                    }
-                    for u in users[:300]
-                ]
-            }
+        return Response({"results": [_serialize_admin_user(u) for u in users[:300]]})
+
+
+class AdminAdminsCreateView(APIView):
+    permission_classes = [permissions.IsAuthenticated, IsAdminRole, IsSuperAdminRole]
+
+    def post(self, request):
+        email = str(request.data.get("email") or "").strip().lower()
+        password = str(request.data.get("password") or "")
+        if not email or "@" not in email:
+            return Response({"detail": "Valid email is required."}, status=status.HTTP_400_BAD_REQUEST)
+        if len(password) < 6:
+            return Response({"detail": "Password must be at least 6 characters."}, status=status.HTTP_400_BAD_REQUEST)
+        if User.objects.filter(email__iexact=email).exists():
+            return Response({"detail": "A user with this email already exists."}, status=status.HTTP_400_BAD_REQUEST)
+        user = User.objects.create_user(
+            email,
+            password,
+            role=User.Role.ADMIN,
+            is_staff=True,
+            is_active=True,
+            is_super_admin=False,
         )
+        return Response(_serialize_admin_user(user), status=status.HTTP_201_CREATED)
 
 
 class AdminUserDetailView(APIView):
@@ -244,14 +268,31 @@ class AdminUserDetailView(APIView):
         user = User.objects.filter(pk=user_id).first()
         if not user:
             return Response({"detail": "User not found."}, status=status.HTTP_404_NOT_FOUND)
-        if "role" in request.data and str(request.data["role"]) in {User.Role.ADMIN, User.Role.USER}:
-            user.role = str(request.data["role"])
+        update_fields = []
+        if "role" in request.data:
+            new_role = str(request.data["role"])
+            if new_role not in {User.Role.ADMIN, User.Role.USER}:
+                return Response({"detail": "Invalid role."}, status=status.HTTP_400_BAD_REQUEST)
+            if not getattr(request.user, "is_super_admin", False):
+                return Response(
+                    {"detail": "Only super admins can change user roles."},
+                    status=status.HTTP_403_FORBIDDEN,
+                )
+            if getattr(user, "is_super_admin", False) and new_role == User.Role.USER:
+                return Response(
+                    {"detail": "Cannot demote a super admin account."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            user.role = new_role
+            update_fields.append("role")
         if "is_active" in request.data:
             try:
                 user.is_active = _parse_bool(request.data.get("is_active"), "is_active")
             except ValueError as exc:
                 return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
-        user.save(update_fields=["role", "is_active"])
+            update_fields.append("is_active")
+        if update_fields:
+            user.save(update_fields=update_fields)
         return Response({"detail": "User updated."}, status=status.HTTP_200_OK)
 
     def delete(self, request, user_id: str):
@@ -261,7 +302,16 @@ class AdminUserDetailView(APIView):
         if not user:
             return Response({"detail": "User not found."}, status=status.HTTP_404_NOT_FOUND)
         if str(user.role) == str(User.Role.ADMIN):
-            return Response({"detail": "Cannot delete administrator accounts."}, status=status.HTTP_400_BAD_REQUEST)
+            if not getattr(request.user, "is_super_admin", False):
+                return Response(
+                    {"detail": "Only super admins can delete administrator accounts."},
+                    status=status.HTTP_403_FORBIDDEN,
+                )
+            if getattr(user, "is_super_admin", False):
+                return Response(
+                    {"detail": "Cannot delete a super admin account."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
         user.delete()
         return Response({"detail": "User deleted."}, status=status.HTTP_200_OK)
 

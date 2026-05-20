@@ -10,6 +10,8 @@ urlpatterns = [
     path("pipeline/run/", api_views.AdminPipelineRunView.as_view(), name="admin-pipeline-run"),
     path("users/", api_views.AdminUsersView.as_view(), name="admin-users"),
     path("users/<str:user_id>/", api_views.AdminUserDetailView.as_view(), name="admin-user-detail"),
+    path("admins/", api_views.AdminAdminsCreateView.as_view(), name="admin-admins-create"),
     path("settings/", api_views.AdminSettingsView.as_view(), name="admin-settings"),
     path("notifications/", api_views.AdminNotificationsView.as_view(), name="admin-notifications"),
 ]
+ 

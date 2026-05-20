@@ -3,16 +3,30 @@ from rest_framework import serializers
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
 
 from .models import User
+from .validators import validate_email_address
+
 
 class RegisterSerializer(serializers.ModelSerializer):
     password = serializers.CharField(write_only=True, min_length=8)
     password_confirm = serializers.CharField(write_only=True, min_length=8)
     id = serializers.CharField(read_only=True)
+    email = serializers.EmailField(validators=[validate_email_address])
 
     class Meta:
         model = User
-        fields = ("id", "email", "password", "password_confirm", "role", "created_at")
-        read_only_fields = ("id", "role", "created_at")
+        fields = (
+            "id",
+            "email",
+            "password",
+            "password_confirm",
+            "role",
+            "email_verified",
+            "created_at",
+        )
+        read_only_fields = ("id", "role", "email_verified", "created_at")
+
+    def validate_email(self, value):
+        return validate_email_address(value)
 
     def validate(self, attrs):
         password = attrs["password"].strip()
@@ -41,7 +55,14 @@ class UserSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = User
-        fields = ("id", "email", "role", "created_at")
+        fields = (
+            "id",
+            "email",
+            "role",
+            "is_super_admin",
+            "email_verified",
+            "created_at",
+        )
         read_only_fields = fields
 
 
@@ -51,7 +72,7 @@ class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
         username_field = self.username_field
         raw_email = attrs.get(username_field, "")
         if isinstance(raw_email, str):
-            attrs[username_field] = raw_email.strip().lower()
+            attrs[username_field] = validate_email_address(raw_email.strip())
         raw_password = attrs.get("password")
         password_candidates = [raw_password]
         if isinstance(raw_password, str):
@@ -78,7 +99,10 @@ class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
 
 
 class PasswordResetRequestSerializer(serializers.Serializer):
-    email = serializers.EmailField()
+    email = serializers.EmailField(validators=[validate_email_address])
+
+    def validate_email(self, value):
+        return validate_email_address(value)
 
 
 class PasswordResetConfirmSerializer(serializers.Serializer):
@@ -95,13 +119,47 @@ class PasswordResetConfirmSerializer(serializers.Serializer):
 
 
 class PasswordResetOtpConfirmSerializer(serializers.Serializer):
-    email = serializers.EmailField()
-    code = serializers.CharField(min_length=4, max_length=8)
+    email = serializers.EmailField(validators=[validate_email_address])
+    code = serializers.CharField(min_length=6, max_length=6)
     password = serializers.CharField(write_only=True, min_length=8)
     password_confirm = serializers.CharField(write_only=True, min_length=8)
+
+    def validate_email(self, value):
+        return validate_email_address(value)
+
+    def validate_code(self, value):
+        code = (value or "").strip()
+        if not code.isdigit() or len(code) != 6:
+            raise serializers.ValidationError("Enter a valid 6-digit code.")
+        return code
 
     def validate(self, attrs):
         if attrs["password"] != attrs["password_confirm"]:
             raise serializers.ValidationError({"password_confirm": "Passwords do not match."})
         validate_password(attrs["password"])
         return attrs
+
+
+class EmailValidateSerializer(serializers.Serializer):
+    email = serializers.EmailField()
+
+    def validate_email(self, value):
+        return validate_email_address(value)
+
+
+class EmailVerificationSendSerializer(serializers.Serializer):
+    pass
+
+
+class EmailVerificationVerifySerializer(serializers.Serializer):
+    code = serializers.CharField(min_length=6, max_length=6)
+
+    def validate_code(self, value):
+        code = (value or "").strip()
+        if not code.isdigit() or len(code) != 6:
+            raise serializers.ValidationError("Enter a valid 6-digit code.")
+        return code
+
+
+class EmailVerificationResendSerializer(serializers.Serializer):
+    pass
