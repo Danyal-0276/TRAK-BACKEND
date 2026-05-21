@@ -2,7 +2,6 @@ import base64
 import logging
 import os
 import random
-import threading
 import re
 import secrets
 import time
@@ -28,6 +27,7 @@ from rest_framework_simplejwt.tokens import RefreshToken
 from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
 
 from .decorators import RatelimitedAPIMixin
+from .email_delivery import queue_otp_email
 from .exceptions import AuthServiceError, BruteForceLockoutError, OtpError
 from .password_reset_utils import (
     consume_password_reset_session,
@@ -947,17 +947,8 @@ class VerifyContactConfirmView(RatelimitedAPIMixin, APIView):
         return Response(_user_payload(request.user), status=status.HTTP_200_OK)
 
 
-def _send_password_reset_otp_async(email: str, user) -> None:
-    """SMTP from Render can block 60s+; never run that on the request thread."""
-    try:
-        OtpService.issue(
-            email=email,
-            purpose=OtpPurpose.PASSWORD_RESET,
-            user=user,
-            send_email=True,
-        )
-    except Exception:
-        logger.exception("Password reset OTP email failed for %s", email)
+def _otp_preview_enabled() -> bool:
+    return os.environ.get("OTP_DEV_PREVIEW", "").lower() in ("1", "true", "yes")
 
 
 class PasswordResetRequestView(RatelimitedAPIMixin, APIView):
@@ -978,21 +969,27 @@ class PasswordResetRequestView(RatelimitedAPIMixin, APIView):
                 "detail": "If an account exists for this address, a reset code was sent."
             }
             if user is not None and user.is_active:
-                # Respond immediately; Gmail SMTP on Render often hangs the HTTP request.
-                threading.Thread(
-                    target=_send_password_reset_otp_async,
-                    args=(email, user),
-                    daemon=True,
-                ).start()
-                preview = os.environ.get("OTP_DEV_PREVIEW", "").lower() in (
-                    "1",
-                    "true",
-                    "yes",
-                )
-                if settings.DEBUG or preview:
-                    payload["dev_code_note"] = (
-                        "Dev preview enabled; check email shortly for the code."
+                try:
+                    # Save OTP in-request (~fast), email in background pool (~does not block UI).
+                    _, plain_code = OtpService.issue(
+                        email=email,
+                        purpose=OtpPurpose.PASSWORD_RESET,
+                        user=user,
+                        send_email=False,
                     )
+                    queue_otp_email(
+                        to_email=email,
+                        code=plain_code,
+                        purpose_label=OtpPurpose.LABELS.get(
+                            OtpPurpose.PASSWORD_RESET, "password reset"
+                        ),
+                        expires_minutes=max(1, OtpService.expiry_seconds() // 60),
+                    )
+                    if settings.DEBUG or _otp_preview_enabled():
+                        payload["dev_code"] = plain_code
+                except Exception:
+                    logger.exception("Password reset OTP failed for %s", email)
+                    payload["email_sent"] = False
             return Response(payload, status=status.HTTP_200_OK)
         except APIException:
             raise

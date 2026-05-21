@@ -104,7 +104,13 @@ class PasswordResetRequestSerializer(serializers.Serializer):
     email = serializers.EmailField()
 
     def validate_email(self, value):
-        return validate_email_address(value)
+        from accounts.exceptions import EmailValidationError
+        from accounts.services.email_validation import EmailValidationService
+
+        try:
+            return EmailValidationService.validate(value, check_mx=False)
+        except EmailValidationError as exc:
+            raise serializers.ValidationError(exc.detail) from exc
 
 
 class PasswordResetConfirmSerializer(serializers.Serializer):
@@ -124,7 +130,14 @@ class PasswordResetOtpVerifySerializer(serializers.Serializer):
     email = serializers.EmailField()
 
     def validate_email(self, value):
-        return validate_email_address(value)
+        from accounts.services.email_validation import EmailValidationService
+        from accounts.exceptions import EmailValidationError
+        from rest_framework import serializers as drf_serializers
+
+        try:
+            return EmailValidationService.validate(value, check_mx=False)
+        except EmailValidationError as exc:
+            raise drf_serializers.ValidationError(exc.detail) from exc
 
     code = serializers.CharField(min_length=6, max_length=6)
 
@@ -139,7 +152,13 @@ class PasswordResetOtpConfirmSerializer(serializers.Serializer):
     email = serializers.EmailField()
 
     def validate_email(self, value):
-        return validate_email_address(value)
+        from accounts.exceptions import EmailValidationError
+        from accounts.services.email_validation import EmailValidationService
+
+        try:
+            return EmailValidationService.validate(value, check_mx=False)
+        except EmailValidationError as exc:
+            raise serializers.ValidationError(exc.detail) from exc
 
     code = serializers.CharField(
         min_length=6, max_length=6, required=False, allow_blank=True
