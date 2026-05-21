@@ -99,7 +99,9 @@ class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
 
 
 class PasswordResetRequestSerializer(serializers.Serializer):
-    email = serializers.EmailField(validators=[validate_email_address])
+    """Same shape as EmailValidateSerializer (single validate_email hook)."""
+
+    email = serializers.EmailField()
 
     def validate_email(self, value):
         return validate_email_address(value)
