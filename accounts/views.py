@@ -976,6 +976,7 @@ class PasswordResetRequestView(RatelimitedAPIMixin, APIView):
                         purpose=OtpPurpose.PASSWORD_RESET,
                         user=user,
                         send_email=False,
+                        check_mx=False,
                     )
                     queue_otp_email(
                         to_email=email,

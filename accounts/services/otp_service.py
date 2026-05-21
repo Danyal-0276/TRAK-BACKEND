@@ -121,11 +121,12 @@ class OtpService:
         send_email: bool = True,
         invalidate_previous: bool = True,
         enforce_cooldown: bool = False,
+        check_mx: bool | None = None,
     ) -> tuple[EmailOtp, str | None]:
         """
         Create OTP, optionally email it. Returns (record, plaintext_code for DEBUG only).
         """
-        normalized = EmailValidationService.validate(email)
+        normalized = EmailValidationService.validate(email, check_mx=check_mx)
         if enforce_cooldown:
             cls._check_resend_cooldown(normalized, purpose)
         if invalidate_previous:
