@@ -2,6 +2,7 @@ import base64
 import logging
 import os
 import random
+import threading
 import re
 import secrets
 import time
@@ -941,6 +942,19 @@ class VerifyContactConfirmView(RatelimitedAPIMixin, APIView):
         return Response(_user_payload(request.user), status=status.HTTP_200_OK)
 
 
+def _send_password_reset_otp_async(email: str, user) -> None:
+    """SMTP from Render can block 60s+; never run that on the request thread."""
+    try:
+        OtpService.issue(
+            email=email,
+            purpose=OtpPurpose.PASSWORD_RESET,
+            user=user,
+            send_email=True,
+        )
+    except Exception:
+        logger.exception("Password reset OTP email failed for %s", email)
+
+
 class PasswordResetRequestView(RatelimitedAPIMixin, APIView):
     """POST { email } — generic message; sends a 6-digit OTP to email when account exists."""
 
@@ -959,18 +973,21 @@ class PasswordResetRequestView(RatelimitedAPIMixin, APIView):
                 "detail": "If an account exists for this address, a reset code was sent."
             }
             if user is not None and user.is_active:
-                try:
-                    _, dev_code = OtpService.issue(
-                        email=email,
-                        purpose=OtpPurpose.PASSWORD_RESET,
-                        user=user,
-                        send_email=True,
+                # Respond immediately; Gmail SMTP on Render often hangs the HTTP request.
+                threading.Thread(
+                    target=_send_password_reset_otp_async,
+                    args=(email, user),
+                    daemon=True,
+                ).start()
+                preview = os.environ.get("OTP_DEV_PREVIEW", "").lower() in (
+                    "1",
+                    "true",
+                    "yes",
+                )
+                if settings.DEBUG or preview:
+                    payload["dev_code_note"] = (
+                        "Dev preview enabled; check email shortly for the code."
                     )
-                    if dev_code:
-                        payload["dev_code"] = dev_code
-                except Exception:
-                    logger.exception("Password reset OTP email failed for %s", email)
-                    payload["email_sent"] = False
             return Response(payload, status=status.HTTP_200_OK)
         except APIException:
             raise
