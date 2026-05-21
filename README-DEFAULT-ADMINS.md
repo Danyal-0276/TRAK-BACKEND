@@ -5,7 +5,7 @@ Three accounts are **always** treated as admins (API `role=admin`, app admin scr
 | Login email | Notes |
 |-------------|--------|
 | `danyal@admin.com` | Built-in |
-| `shahroz@admin.com` | Built-in |
+| `shahroz@admin.com` | Built-in **super admin** (can create/delete other admins) |
 | `abdullah@admin.com` | Built-in |
 
 They are included in `ADMIN_EMAILS` in settings, so **self-registration** with one of these addresses also receives the `admin` role (after email confirmation of your product policy, if you add that later).
@@ -24,7 +24,12 @@ Or one-off:
 
 ```bash
 python manage.py seed_default_admins --password "YourStrongSharedSecret123!"
+
+# Example (local dev):
+python manage.py seed_default_admins --password "admin@123"
 ```
+
+After seeding, `shahroz@admin.com` has `is_super_admin=True`; other built-in admins do not.
 
 Requirements:
 

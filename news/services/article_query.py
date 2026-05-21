@@ -173,33 +173,94 @@ def get_user_feed(
     *,
     search_q: str = "",
 ) -> list[dict]:
+    """Backward-compatible wrapper — returns first page results only."""
+    page = get_user_feed_page(user, limit=limit, search_q=search_q, cursor=None)
+    return page["results"]
+
+
+def get_user_feed_page(
+    user: User,
+    *,
+    limit: int = 30,
+    search_q: str = "",
+    cursor: Optional[str] = None,
+) -> dict[str, Any]:
     """
-    Personalized feed: if the user saved keywords, only articles whose haystack
-    (title, body, topic_keywords, entities, …) matches at least one keyword.
-    Optional search_q further narrows (substring in haystack).
+    Cursor-based personalized feed for infinite scrolling.
+    Same cursor format as explore: processed_at|ObjectId.
     """
     keywords = _normalize_keywords(user)
-    q = (search_q or "").strip()
+    q = (search_q or "").strip().lower()
     if not keywords and not q:
-        return []
+        return {"results": [], "next_cursor": None, "has_more": False}
 
     proc = processed_collection()
-    scan = limit * 4 if (keywords or q) else limit
-    cursor = proc.find().sort("processed_at", -1).limit(max(scan, limit))
     raw_col = raw_collection()
+    page_size = max(1, min(int(limit or 30), 100))
+    batch_size = max(page_size * 4, 80)
+    query = _query_after_cursor(cursor or "")
+
     out: list[dict] = []
-    for doc in cursor:
-        raw_doc = None
-        url = doc.get("canonical_url") or doc.get("raw_canonical_url")
-        if url:
-            raw_doc = raw_col.find_one({"canonical_url": url})
-        if not _matches_feed_filters(doc, raw_doc, keywords, q):
-            continue
-        out.append(article_to_api_dict(doc, raw_doc))
-        if len(out) >= limit:
+    last_seen_doc: Optional[dict] = None
+
+    while len(out) < page_size:
+        docs = list(
+            proc.find(query)
+            .sort([("processed_at", -1), ("_id", -1)])
+            .limit(batch_size)
+        )
+        if not docs:
             break
+
+        for doc in docs:
+            last_seen_doc = doc
+            raw_doc = None
+            url = doc.get("canonical_url") or doc.get("raw_canonical_url")
+            if url:
+                raw_doc = raw_col.find_one({"canonical_url": url})
+            if not _matches_feed_filters(doc, raw_doc, keywords, q):
+                continue
+            out.append(article_to_api_dict(doc, raw_doc))
+            if len(out) >= page_size:
+                break
+
+        if len(out) >= page_size:
+            break
+
+        next_scan_cursor = _cursor_payload_from_doc(docs[-1])
+        if not next_scan_cursor:
+            break
+        query = _query_after_cursor(next_scan_cursor)
+
+    next_cursor = _cursor_payload_from_doc(last_seen_doc or {})
+    has_more = False
+    if next_cursor and last_seen_doc is not None:
+        probe_query = _query_after_cursor(next_cursor)
+        while True:
+            docs = list(
+                proc.find(probe_query)
+                .sort([("processed_at", -1), ("_id", -1)])
+                .limit(batch_size)
+            )
+            if not docs:
+                break
+            for doc in docs:
+                raw_doc = None
+                url = doc.get("canonical_url") or doc.get("raw_canonical_url")
+                if url:
+                    raw_doc = raw_col.find_one({"canonical_url": url})
+                if _matches_feed_filters(doc, raw_doc, keywords, q):
+                    has_more = True
+                    break
+            if has_more:
+                break
+            next_scan_cursor = _cursor_payload_from_doc(docs[-1])
+            if not next_scan_cursor:
+                break
+            probe_query = _query_after_cursor(next_scan_cursor)
+
     hydrate_article_reaction_counts(out)
-    return out
+    return {"results": out, "next_cursor": next_cursor if has_more else None, "has_more": has_more}
 
 
 def get_article_by_id(article_id: str, user: User) -> Optional[dict]:

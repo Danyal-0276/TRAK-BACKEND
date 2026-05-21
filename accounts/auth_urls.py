@@ -1,8 +1,25 @@
 from django.urls import path
 
 from . import views
+from . import views_auth_email
 
 urlpatterns = [
+    path("email/validate/", views_auth_email.EmailValidateView.as_view(), name="auth-email-validate"),
+    path(
+        "email-verification/send/",
+        views_auth_email.EmailVerificationSendView.as_view(),
+        name="auth-email-verification-send",
+    ),
+    path(
+        "email-verification/verify/",
+        views_auth_email.EmailVerificationVerifyView.as_view(),
+        name="auth-email-verification-verify",
+    ),
+    path(
+        "email-verification/resend/",
+        views_auth_email.EmailVerificationResendView.as_view(),
+        name="auth-email-verification-resend",
+    ),
     path("register/", views.RegisterView.as_view(), name="auth-register"),
     path("login/", views.LoginView.as_view(), name="auth-login"),
     path("otp/request/", views.OtpRequestView.as_view(), name="auth-otp-request"),

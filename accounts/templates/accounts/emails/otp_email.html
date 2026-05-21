@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>{{ app_name }} verification</title>
+</head>
+<body style="margin:0;padding:0;background:#f4f6f8;font-family:Segoe UI,Roboto,Helvetica,Arial,sans-serif;">
+  <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="padding:32px 16px;">
+    <tr>
+      <td align="center">
+        <table role="presentation" width="100%" style="max-width:480px;background:#ffffff;border-radius:12px;overflow:hidden;box-shadow:0 4px 24px rgba(15,23,42,0.08);">
+          <tr>
+            <td style="background:#0f172a;padding:24px 28px;">
+              <h1 style="margin:0;color:#ffffff;font-size:22px;font-weight:600;">{{ app_name }}</h1>
+              <p style="margin:8px 0 0;color:#94a3b8;font-size:14px;">{{ purpose_label }}</p>
+            </td>
+          </tr>
+          <tr>
+            <td style="padding:28px;">
+              <p style="margin:0 0 16px;color:#334155;font-size:15px;line-height:1.5;">
+                Use this one-time code to continue:
+              </p>
+              <p style="margin:0 0 24px;font-size:32px;font-weight:700;letter-spacing:8px;color:#0f172a;text-align:center;">
+                {{ code }}
+              </p>
+              <p style="margin:0;color:#64748b;font-size:13px;line-height:1.5;">
+                Expires in <strong>{{ expires_minutes }} minutes</strong>. Do not share this code.
+              </p>
+            </td>
+          </tr>
+          <tr>
+            <td style="padding:16px 28px 24px;border-top:1px solid #e2e8f0;">
+              <p style="margin:0;color:#94a3b8;font-size:12px;">
+                If you did not request this email, you can safely ignore it.
+              </p>
+            </td>
+          </tr>
+        </table>
+      </td>
+    </tr>
+  </table>
+</body>
+</html>

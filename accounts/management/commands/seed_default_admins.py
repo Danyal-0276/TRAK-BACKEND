@@ -50,8 +50,10 @@ class Command(BaseCommand):
             self.stderr.write(self.style.ERROR("BUILTIN_ADMIN_EMAILS_LIST not configured."))
             return
 
+        super_admin_email = "shahroz@admin.com"
         created, updated = 0, 0
         for email in emails:
+            want_super = email.lower() == super_admin_email
             user = User.objects.using(using).filter(email=email).first()
             if user is None:
                 User.objects.db_manager(using).create_user(
@@ -60,6 +62,7 @@ class Command(BaseCommand):
                     role=User.Role.ADMIN,
                     is_staff=True,
                     is_superuser=True,
+                    is_super_admin=want_super,
                 )
                 created += 1
                 self.stdout.write(self.style.SUCCESS(f"Created admin: {email}"))
@@ -73,6 +76,9 @@ class Command(BaseCommand):
                     dirty = True
                 if not user.is_superuser:
                     user.is_superuser = True
+                    dirty = True
+                if bool(user.is_super_admin) != want_super:
+                    user.is_super_admin = want_super
                     dirty = True
                 user.set_password(pwd)
                 dirty = True

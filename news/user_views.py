@@ -32,12 +32,15 @@ class UserFeedView(APIView):
 
     def get(self, request):
         try:
-            limit = min(int(request.query_params.get("limit", 50)), 100)
+            limit = min(int(request.query_params.get("limit", 30)), 100)
         except ValueError:
-            limit = 50
+            limit = 30
         q = (request.query_params.get("q") or "").strip()
-        data = article_query.get_user_feed(request.user, limit=limit, search_q=q)
-        return Response({"results": data})
+        cursor = (request.query_params.get("cursor") or "").strip() or None
+        page = article_query.get_user_feed_page(
+            request.user, limit=limit, search_q=q, cursor=cursor
+        )
+        return Response(page)
 
 
 class ExploreFeedView(APIView):

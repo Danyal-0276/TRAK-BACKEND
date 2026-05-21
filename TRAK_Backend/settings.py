@@ -201,6 +201,89 @@ REST_FRAMEWORK = {
         "login": os.environ.get("THROTTLE_LOGIN", "30/hour"),
         "refresh": os.environ.get("THROTTLE_REFRESH", "120/hour"),
         "password_reset": os.environ.get("THROTTLE_PASSWORD_RESET", "5/hour"),
+        "otp_send": os.environ.get("THROTTLE_OTP_SEND", "10/hour"),
+        "otp_verify": os.environ.get("THROTTLE_OTP_VERIFY", "30/hour"),
+        "email_validate": os.environ.get("THROTTLE_EMAIL_VALIDATE", "60/hour"),
+    },
+}
+
+_redis_url = os.environ.get("REDIS_URL", "").strip()
+
+# --- Auth security (email validation, OTP, brute-force) ---
+RATELIMIT_ENABLE = os.environ.get("RATELIMIT_ENABLE", "true").lower() in ("1", "true", "yes")
+RATELIMIT_USE_CACHE = "default"
+
+EMAIL_VALIDATION = {
+    "CHECK_MX": os.environ.get("EMAIL_VALIDATION_CHECK_MX", "true").lower() in ("1", "true", "yes"),
+    "BLOCK_DISPOSABLE": os.environ.get("EMAIL_VALIDATION_BLOCK_DISPOSABLE", "true").lower()
+    in ("1", "true", "yes"),
+    "BLOCKED_DOMAINS": [
+        d.strip().lower()
+        for d in os.environ.get("EMAIL_VALIDATION_BLOCKED_DOMAINS", "").split(",")
+        if d.strip()
+    ],
+    "DISPOSABLE_EXTRA": [
+        d.strip().lower()
+        for d in os.environ.get("EMAIL_VALIDATION_DISPOSABLE_EXTRA", "").split(",")
+        if d.strip()
+    ],
+}
+
+OTP = {
+    "EXPIRY_SECONDS": int(os.environ.get("OTP_EXPIRY_SECONDS", "300")),
+    "RESEND_COOLDOWN_SECONDS": int(os.environ.get("OTP_RESEND_COOLDOWN_SECONDS", "60")),
+    "MAX_ATTEMPTS": int(os.environ.get("OTP_MAX_ATTEMPTS", "5")),
+}
+
+OTP_HASH_SECRET = os.environ.get("OTP_HASH_SECRET", "").strip() or None
+
+AUTH_SECURITY = {
+    "LOGIN_MAX_ATTEMPTS": int(os.environ.get("AUTH_LOGIN_MAX_ATTEMPTS", "10")),
+    "LOGIN_LOCKOUT_SECONDS": int(os.environ.get("AUTH_LOGIN_LOCKOUT_SECONDS", "900")),
+    "OTP_VERIFY_MAX_ATTEMPTS": int(os.environ.get("AUTH_OTP_VERIFY_MAX_ATTEMPTS", "5")),
+    "OTP_VERIFY_LOCKOUT_SECONDS": int(os.environ.get("AUTH_OTP_VERIFY_LOCKOUT_SECONDS", "900")),
+}
+
+REGISTER_SEND_VERIFICATION_OTP = os.environ.get(
+    "REGISTER_SEND_VERIFICATION_OTP", "true"
+).lower() in ("1", "true", "yes")
+
+# Redis cache only when explicitly enabled (avoids 500s if Redis is not running locally).
+_use_redis = os.environ.get("USE_REDIS", "false").lower() in ("1", "true", "yes")
+if _redis_url and _use_redis:
+    CACHES = {
+        "default": {
+            "BACKEND": "django.core.cache.backends.redis.RedisCache",
+            "LOCATION": _redis_url,
+        }
+    }
+else:
+    CACHES = {
+        "default": {
+            "BACKEND": "django.core.cache.backends.locmem.LocMemCache",
+            "LOCATION": "trak-auth-cache",
+        }
+    }
+
+LOGGING = {
+    "version": 1,
+    "disable_existing_loggers": False,
+    "formatters": {
+        "verbose": {
+            "format": "{levelname} {asctime} {module} {message}",
+            "style": "{",
+        },
+    },
+    "handlers": {
+        "console": {
+            "class": "logging.StreamHandler",
+            "formatter": "verbose",
+        },
+    },
+    "loggers": {
+        "accounts.security": {"handlers": ["console"], "level": "INFO", "propagate": False},
+        "accounts.otp": {"handlers": ["console"], "level": "INFO", "propagate": False},
+        "accounts.email": {"handlers": ["console"], "level": "WARNING", "propagate": False},
     },
 }
 
@@ -238,8 +321,7 @@ SIMPLE_JWT = {
     "BLACKLIST_AFTER_ROTATION": False,
 }
 
-_redis_url = os.environ.get("REDIS_URL", "").strip()
-if _redis_url:
+if _redis_url and _use_redis:
     CHANNEL_LAYERS = {
         "default": {
             "BACKEND": "channels_redis.core.RedisChannelLayer",
