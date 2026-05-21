@@ -19,6 +19,7 @@ from django.utils.encoding import force_str
 from django.utils.http import urlsafe_base64_decode
 from django.conf import settings
 from rest_framework import generics, permissions, status
+from rest_framework.exceptions import APIException
 from rest_framework.response import Response
 from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.views import APIView
@@ -946,27 +947,39 @@ class PasswordResetRequestView(RatelimitedAPIMixin, APIView):
     permission_classes = [permissions.AllowAny]
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = "password_reset"
-    ratelimit_rate = "5/h"
+    ratelimit_rate = "30/m"
 
     def post(self, request):
-        ser = PasswordResetRequestSerializer(data=request.data)
-        ser.is_valid(raise_exception=True)
-        email = ser.validated_data["email"]
-        user = User.objects.filter(email__iexact=email).first()
-        payload: dict = {"detail": "If an account exists for this address, a reset code was sent."}
-        if user is not None and user.is_active:
-            try:
-                _, dev_code = OtpService.issue(
-                    email=email,
-                    purpose=OtpPurpose.PASSWORD_RESET,
-                    user=user,
-                    send_email=True,
-                )
-                if settings.DEBUG and dev_code:
-                    payload["dev_code"] = dev_code
-            except Exception:
-                logger.exception("Password reset OTP email failed for %s", email)
-        return Response(payload, status=status.HTTP_200_OK)
+        try:
+            ser = PasswordResetRequestSerializer(data=request.data)
+            ser.is_valid(raise_exception=True)
+            email = ser.validated_data["email"]
+            user = User.objects.filter(email=email).first()
+            payload: dict = {
+                "detail": "If an account exists for this address, a reset code was sent."
+            }
+            if user is not None and user.is_active:
+                try:
+                    _, dev_code = OtpService.issue(
+                        email=email,
+                        purpose=OtpPurpose.PASSWORD_RESET,
+                        user=user,
+                        send_email=True,
+                    )
+                    if dev_code:
+                        payload["dev_code"] = dev_code
+                except Exception:
+                    logger.exception("Password reset OTP email failed for %s", email)
+                    payload["email_sent"] = False
+            return Response(payload, status=status.HTTP_200_OK)
+        except APIException:
+            raise
+        except Exception:
+            logger.exception("Password reset request failed")
+            return Response(
+                {"detail": "Could not process password reset. Please try again later."},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
 
 
 class PasswordResetOtpConfirmView(RatelimitedAPIMixin, APIView):

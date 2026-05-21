@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import logging
+import os
 import secrets
 from datetime import timedelta
 
@@ -151,7 +152,8 @@ class OtpService:
             )
             logger.info("OTP issued purpose=%s email=%s", purpose, normalized)
 
-        dev_code = code if settings.DEBUG else None
+        preview = os.environ.get("OTP_DEV_PREVIEW", "").lower() in ("1", "true", "yes")
+        dev_code = code if (settings.DEBUG or preview) else None
         return record, dev_code
 
     @classmethod
