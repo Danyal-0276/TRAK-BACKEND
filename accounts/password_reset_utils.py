@@ -1,8 +1,11 @@
-"""Send password reset email (Django token + uid)."""
+"""Send password reset email (Django token + uid) and OTP reset-session tokens."""
 
 from __future__ import annotations
 
+import secrets
+
 from django.conf import settings
+from django.core.cache import cache
 from django.contrib.auth import get_user_model
 from django.contrib.auth.tokens import default_token_generator
 from django.core.mail import send_mail
@@ -20,6 +23,31 @@ def build_reset_url(user: User) -> tuple[str, str, str]:
         base = "http://127.0.0.1:5173/reset-password"
     reset_url = f"{base}?uid={uid}&token={token}"
     return reset_url, uid, token
+
+
+PWRESET_TOKEN_CACHE_PREFIX = "auth:pwreset:token:"
+PWRESET_TOKEN_TTL_SECONDS = 900  # 15 minutes
+
+
+def issue_password_reset_session(email: str) -> str:
+    """Short-lived token after OTP verify; required to set a new password."""
+    token = secrets.token_urlsafe(32)
+    cache.set(
+        f"{PWRESET_TOKEN_CACHE_PREFIX}{token}",
+        email.strip().lower(),
+        timeout=PWRESET_TOKEN_TTL_SECONDS,
+    )
+    return token
+
+
+def consume_password_reset_session(*, email: str, reset_token: str) -> bool:
+    """Validate and invalidate reset token for this email."""
+    key = f"{PWRESET_TOKEN_CACHE_PREFIX}{(reset_token or '').strip()}"
+    cached = cache.get(key)
+    if not cached or cached != email.strip().lower():
+        return False
+    cache.delete(key)
+    return True
 
 
 def send_password_reset_email(user: User) -> None:

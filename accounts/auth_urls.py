@@ -40,6 +40,11 @@ urlpatterns = [
         name="auth-password-reset",
     ),
     path(
+        "password-reset/otp-verify/",
+        views.PasswordResetOtpVerifyView.as_view(),
+        name="auth-password-reset-otp-verify",
+    ),
+    path(
         "password-reset/otp-confirm/",
         views.PasswordResetOtpConfirmView.as_view(),
         name="auth-password-reset-otp-confirm",
