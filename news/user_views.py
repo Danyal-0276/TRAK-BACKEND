@@ -89,8 +89,14 @@ class TrackKeywordsView(APIView):
             return Response({"detail": "keywords required"}, status=status.HTTP_400_BAD_REQUEST)
         if not isinstance(keywords, list):
             return Response({"detail": "keywords must be a list"}, status=status.HTTP_400_BAD_REQUEST)
-        payload = article_query.upsert_user_keywords(request.user, keywords)
-        return Response(payload, status=status.HTTP_200_OK)
+        try:
+            payload = article_query.upsert_user_keywords(request.user, keywords)
+            return Response(payload, status=status.HTTP_200_OK)
+        except Exception as exc:
+            return Response(
+                {"detail": f"Could not save keywords: {exc}"},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
 
 
 class ArticleReportView(APIView):

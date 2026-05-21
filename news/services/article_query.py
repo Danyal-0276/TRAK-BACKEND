@@ -320,7 +320,7 @@ def upsert_user_keywords(user: User, keywords: list[str]) -> dict[str, Any]:
         {"$set": {"keywords": cleaned, "updated_at": now}, "$setOnInsert": {"user_id": user.pk, "created_at": now}},
         upsert=True,
     )
-    return {"user_id": user.pk, "keywords": cleaned}
+    return {"user_id": str(user.pk), "keywords": cleaned}
 
 
 def get_explore_feed(limit: int = 200, *, search_q: str = "") -> list[dict]:
