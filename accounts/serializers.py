@@ -120,14 +120,13 @@ class PasswordResetConfirmSerializer(serializers.Serializer):
         return attrs
 
 
-class PasswordResetOtpConfirmSerializer(serializers.Serializer):
-    email = serializers.EmailField(validators=[validate_email_address])
-    code = serializers.CharField(min_length=6, max_length=6)
-    password = serializers.CharField(write_only=True, min_length=8)
-    password_confirm = serializers.CharField(write_only=True, min_length=8)
+class PasswordResetOtpVerifySerializer(serializers.Serializer):
+    email = serializers.EmailField()
 
     def validate_email(self, value):
         return validate_email_address(value)
+
+    code = serializers.CharField(min_length=6, max_length=6)
 
     def validate_code(self, value):
         code = (value or "").strip()
@@ -135,7 +134,38 @@ class PasswordResetOtpConfirmSerializer(serializers.Serializer):
             raise serializers.ValidationError("Enter a valid 6-digit code.")
         return code
 
+
+class PasswordResetOtpConfirmSerializer(serializers.Serializer):
+    email = serializers.EmailField()
+
+    def validate_email(self, value):
+        return validate_email_address(value)
+
+    code = serializers.CharField(
+        min_length=6, max_length=6, required=False, allow_blank=True
+    )
+    reset_token = serializers.CharField(required=False, allow_blank=True)
+    password = serializers.CharField(write_only=True, min_length=8)
+    password_confirm = serializers.CharField(write_only=True, min_length=8)
+
+    def validate_code(self, value):
+        code = (value or "").strip()
+        if not code:
+            return ""
+        if not code.isdigit() or len(code) != 6:
+            raise serializers.ValidationError("Enter a valid 6-digit code.")
+        return code
+
+    def validate_reset_token(self, value):
+        return (value or "").strip()
+
     def validate(self, attrs):
+        code = attrs.get("code") or ""
+        reset_token = attrs.get("reset_token") or ""
+        if not code and not reset_token:
+            raise serializers.ValidationError(
+                {"detail": "Reset session expired. Verify your code again."}
+            )
         if attrs["password"] != attrs["password_confirm"]:
             raise serializers.ValidationError({"password_confirm": "Passwords do not match."})
         validate_password(attrs["password"])

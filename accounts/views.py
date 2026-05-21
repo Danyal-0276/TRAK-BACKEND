@@ -29,10 +29,15 @@ from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
 
 from .decorators import RatelimitedAPIMixin
 from .exceptions import AuthServiceError, BruteForceLockoutError, OtpError
+from .password_reset_utils import (
+    consume_password_reset_session,
+    issue_password_reset_session,
+)
 from .serializers import (
     CustomTokenObtainPairSerializer,
     PasswordResetConfirmSerializer,
     PasswordResetOtpConfirmSerializer,
+    PasswordResetOtpVerifySerializer,
     PasswordResetRequestSerializer,
     RegisterSerializer,
     UserSerializer,
@@ -999,16 +1004,16 @@ class PasswordResetRequestView(RatelimitedAPIMixin, APIView):
             )
 
 
-class PasswordResetOtpConfirmView(RatelimitedAPIMixin, APIView):
-    """POST { email, code, password, password_confirm } — verify OTP and set new password."""
+class PasswordResetOtpVerifyView(RatelimitedAPIMixin, APIView):
+    """POST { email, code } — verify OTP only; returns short-lived reset_token."""
 
     permission_classes = [permissions.AllowAny]
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = "password_reset"
-    ratelimit_rate = "10/h"
+    ratelimit_rate = "30/m"
 
     def post(self, request):
-        ser = PasswordResetOtpConfirmSerializer(data=request.data)
+        ser = PasswordResetOtpVerifySerializer(data=request.data)
         ser.is_valid(raise_exception=True)
         email = ser.validated_data["email"]
         code = ser.validated_data["code"]
@@ -1027,10 +1032,76 @@ class PasswordResetOtpConfirmView(RatelimitedAPIMixin, APIView):
             AuthSecurityService.record_otp_verify_failure(
                 email, OtpPurpose.PASSWORD_RESET, ip
             )
-            return Response({"detail": "Invalid or expired reset code."}, status=status.HTTP_400_BAD_REQUEST)
-        user = User.objects.filter(email__iexact=email).first()
+            return Response(
+                {"detail": "Invalid or expired reset code."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        user = User.objects.filter(email=email).first()
         if not user or not user.is_active:
-            return Response({"detail": "Invalid or expired reset code."}, status=status.HTTP_400_BAD_REQUEST)
+            return Response(
+                {"detail": "Invalid or expired reset code."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        reset_token = issue_password_reset_session(email)
+        return Response(
+            {
+                "detail": "Code verified. You can set a new password.",
+                "reset_token": reset_token,
+            },
+            status=status.HTTP_200_OK,
+        )
+
+
+class PasswordResetOtpConfirmView(RatelimitedAPIMixin, APIView):
+    """POST { email, reset_token, password, password_confirm } — set password after OTP verify."""
+
+    permission_classes = [permissions.AllowAny]
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = "password_reset"
+    ratelimit_rate = "10/h"
+
+    def post(self, request):
+        ser = PasswordResetOtpConfirmSerializer(data=request.data)
+        ser.is_valid(raise_exception=True)
+        email = ser.validated_data["email"]
+        code = ser.validated_data.get("code") or ""
+        reset_token = ser.validated_data.get("reset_token") or ""
+        ip = AuthSecurityService.client_ip(request)
+
+        if reset_token:
+            if not consume_password_reset_session(email=email, reset_token=reset_token):
+                return Response(
+                    {"detail": "Reset session expired. Verify your code again."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+        else:
+            try:
+                AuthSecurityService.check_otp_verify_allowed(
+                    email, OtpPurpose.PASSWORD_RESET, ip
+                )
+                OtpService.verify(
+                    email=email, purpose=OtpPurpose.PASSWORD_RESET, code=code
+                )
+                AuthSecurityService.clear_otp_verify_failures(
+                    email, OtpPurpose.PASSWORD_RESET, ip
+                )
+            except BruteForceLockoutError as exc:
+                return Response({"detail": exc.detail}, status=exc.status_code)
+            except OtpError:
+                AuthSecurityService.record_otp_verify_failure(
+                    email, OtpPurpose.PASSWORD_RESET, ip
+                )
+                return Response(
+                    {"detail": "Invalid or expired reset code."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+        user = User.objects.filter(email=email).first()
+        if not user or not user.is_active:
+            return Response(
+                {"detail": "Invalid or expired reset code."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
         user.set_password(ser.validated_data["password"])
         user.save()
         AuthSecurityService.clear_login_failures(email, ip)
