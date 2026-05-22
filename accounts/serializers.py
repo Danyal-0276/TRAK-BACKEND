@@ -26,7 +26,12 @@ class RegisterSerializer(serializers.ModelSerializer):
         read_only_fields = ("id", "role", "email_verified", "created_at")
 
     def validate_email(self, value):
-        return validate_email_address(value)
+        email = validate_email_address(value)
+        if User.objects.filter(email__iexact=email).exists():
+            raise serializers.ValidationError(
+                "An account with this email already exists. Please log in instead."
+            )
+        return email
 
     def validate(self, attrs):
         password = attrs["password"].strip()

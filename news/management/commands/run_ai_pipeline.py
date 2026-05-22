@@ -4,6 +4,7 @@ from news.credibility.inference import preload_credibility_model
 from news.summarization.inference import preload_summarizer_model
 from news.mongo_db import ensure_all_article_indexes, processed_collection, raw_collection
 from news.pipeline import orchestrator
+from news.services.feed_cache import invalidate_explore_cache
 
 
 class Command(BaseCommand):
@@ -59,6 +60,7 @@ class Command(BaseCommand):
 
         pending = raw_collection().count_documents({"pipeline_status": "pending"})
         processed = processed_collection().count_documents({})
+        invalidate_explore_cache()
         self.stdout.write(
             self.style.SUCCESS(
                 f"{result} | processed_articles count={processed} | raw pending={pending}"

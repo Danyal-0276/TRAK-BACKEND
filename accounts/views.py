@@ -147,6 +147,19 @@ def _mark_email_verified(user: User) -> None:
         logger.exception("Mongo email_verified sync failed for user_id=%s", user.pk)
 
 
+def _onboarding_complete(user_id: int) -> bool:
+    """True when the user has saved feed keywords (finished tag/keyword onboarding)."""
+    try:
+        from news.mongo_db import user_keywords_collection
+
+        row = user_keywords_collection().find_one({"user_id": user_id}) or {}
+        keywords = row.get("keywords") or []
+        return any(str(k).strip() for k in keywords)
+    except Exception:
+        logger.exception("Failed to read onboarding keywords for user_id=%s", user_id)
+        return False
+
+
 def _user_payload(user: User) -> dict:
     p = _get_profile(user.pk)
     followers_count = 0
@@ -655,7 +668,8 @@ class FirebaseLoginView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
         user = User.objects.filter(email__iexact=email).first()
-        if not user:
+        is_new_user = user is None
+        if is_new_user:
             user = User.objects.create_user(email=email, password=_random_user_password())
         refresh = RefreshToken.for_user(user)
         return Response(
@@ -663,6 +677,8 @@ class FirebaseLoginView(APIView):
                 "refresh": str(refresh),
                 "access": str(refresh.access_token),
                 "user": _user_payload(user),
+                "is_new_user": is_new_user,
+                "onboarding_complete": _onboarding_complete(user.pk),
             },
             status=status.HTTP_200_OK,
         )
@@ -752,6 +768,8 @@ class RegisterView(RatelimitedAPIMixin, APIView):
             "access": str(refresh.access_token),
             "user": _user_payload(user),
             "verification_required": not user.email_verified,
+            "is_new_user": True,
+            "onboarding_complete": False,
         }
         if settings.DEBUG and dev_code:
             payload["dev_code"] = dev_code

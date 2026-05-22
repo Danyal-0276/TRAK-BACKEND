@@ -78,12 +78,22 @@ def ensure_all_article_indexes() -> None:
 
     raw_storage.ensure_indexes()
 
+    from pymongo import DESCENDING, TEXT
+
     proc = processed_collection()
     proc.create_index([("canonical_url", ASCENDING)], unique=True, sparse=True)
     proc.create_index([("raw_canonical_url", ASCENDING)])
     proc.create_index([("processed_at", ASCENDING)])
+    proc.create_index([("processed_at", DESCENDING), ("_id", DESCENDING)])
     proc.create_index([("credibility_label", ASCENDING)])
     proc.create_index([("topic_keywords", ASCENDING)])
+    try:
+        proc.create_index(
+            [("title", TEXT), ("summary", TEXT), ("clean_text", TEXT)],
+            name="processed_articles_text",
+        )
+    except Exception:
+        pass
 
     uk = user_keywords_collection()
     uk.create_index([("user_id", ASCENDING)], unique=True)
