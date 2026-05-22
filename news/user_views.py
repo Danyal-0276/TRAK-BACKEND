@@ -9,7 +9,7 @@ from news.mongo_db import (
     article_reports_collection,
     bookmarks_collection,
     chatbot_history_collection,
-    raw_collection,
+    processed_collection,
     reactions_collection,
     user_preferences_collection,
 )
@@ -55,6 +55,61 @@ class ExploreFeedView(APIView):
         cursor = (request.query_params.get("cursor") or "").strip() or None
         page = article_query.get_explore_feed_page(limit=limit, search_q=q, cursor=cursor)
         return Response(page)
+
+
+class UserBootstrapView(APIView):
+    """Single round-trip for home: keywords, feed page, bookmarks, reactions."""
+
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        try:
+            limit = min(int(request.query_params.get("limit", 30)), 50)
+        except ValueError:
+            limit = 30
+        user = request.user
+        keywords = article_query.list_user_keywords(user)
+        if keywords:
+            feed_page = article_query.get_user_feed_page(
+                user, limit=limit, search_q="", cursor=None
+            )
+        else:
+            feed_page = article_query.get_explore_feed_page(
+                limit=limit, search_q="", cursor=None
+            )
+        bookmark_rows = list(
+            bookmarks_collection().find({"user_id": user.pk}).sort("created_at", -1)
+        )
+        reaction_rows = list(reactions_collection().find({"user_id": user.pk}))
+        return Response(
+            {
+                "keywords": keywords,
+                "feed": feed_page,
+                "bookmarks": {
+                    "results": [
+                        {
+                            "id": str(r.get("_id")),
+                            "article_id": r.get("article_id"),
+                            "title": r.get("title"),
+                            "url": r.get("url"),
+                            "created_at": r.get("created_at"),
+                        }
+                        for r in bookmark_rows
+                    ]
+                },
+                "reactions": {
+                    "results": [
+                        {
+                            "article_id": str(r.get("article_id") or ""),
+                            "reaction": str(r.get("reaction") or "none"),
+                            "updated_at": r.get("updated_at"),
+                        }
+                        for r in reaction_rows
+                        if r.get("article_id")
+                    ]
+                },
+            }
+        )
 
 
 class PlatformCategoriesView(APIView):
@@ -155,9 +210,18 @@ class ChatbotView(APIView):
             _append_chatbot_history(request.user.pk, message, payload["reply"], payload.get("articles") or [])
             return Response(payload)
 
-        recent_raw = list(raw_collection().find().sort("fetched_at", -1).limit(3))
-        if recent_raw:
-            titles = [str(a.get("title") or "Untitled").strip() for a in recent_raw if a.get("title")]
+        recent_processed = list(
+            processed_collection()
+            .find({}, {"title": 1})
+            .sort("processed_at", -1)
+            .limit(3)
+        )
+        if recent_processed:
+            titles = [
+                str(a.get("title") or "Untitled").strip()
+                for a in recent_processed
+                if a.get("title")
+            ]
             payload = {
                 "reply": "I could not find an exact match, but here are recent headlines.",
                 "headlines": titles,

@@ -7,11 +7,32 @@ from typing import Any, Optional
 from bson import ObjectId
 from django.contrib.auth import get_user_model
 
-from news.mongo_db import processed_collection, raw_collection, reactions_collection, user_keywords_collection
+from news.mongo_db import processed_collection, reactions_collection, user_keywords_collection
+from news.services.feed_cache import explore_cache_key, get_cached_explore, set_cached_explore
 
 User = get_user_model()
 
 ID_LABELS = {0: "real", 1: "fake", 2: "suspicious"}
+
+# Fields loaded from processed_articles for feed/explore (never raw_articles).
+PROCESSED_FEED_PROJECTION = {
+    "_id": 1,
+    "title": 1,
+    "summary": 1,
+    "clean_text": 1,
+    "normalized_text": 1,
+    "canonical_url": 1,
+    "raw_canonical_url": 1,
+    "source_key": 1,
+    "published_at": 1,
+    "processed_at": 1,
+    "credibility_label": 1,
+    "credibility_max_prob": 1,
+    "credibility_probs": 1,
+    "credibility_labels_map": 1,
+    "topic_keywords": 1,
+    "entities": 1,
+}
 
 
 def _oid_str(doc: dict) -> str:
@@ -28,17 +49,14 @@ def _normalize_keywords(user: User) -> list[str]:
     return [str(k).strip().lower() for k in kws if str(k).strip()]
 
 
-def _doc_haystack(doc: dict, raw_fallback: Optional[dict] = None) -> str:
-    """All text + extracted topic tokens + entities — used for keyword + search matching."""
+def _doc_haystack(doc: dict) -> str:
+    """Processed-only text for keyword + search matching."""
     parts: list[str] = [
         str(doc.get("title") or ""),
         str(doc.get("summary") or ""),
-        str(doc.get("clean_text") or ""),
-        str(doc.get("normalized_text") or ""),
+        str(doc.get("clean_text") or "")[:4000],
+        str(doc.get("normalized_text") or "")[:2000],
     ]
-    raw = raw_fallback or {}
-    parts.append(str(raw.get("body_text") or "")[:4000])
-    parts.append(str(raw.get("title") or ""))
     for k in doc.get("topic_keywords") or []:
         parts.append(str(k))
     for t in doc.get("normalized_terms") or []:
@@ -59,11 +77,10 @@ def _keyword_matches_hay(keyword: str, hay: str) -> bool:
 
 def _matches_feed_filters(
     doc: dict,
-    raw_fallback: Optional[dict],
     user_keywords: list[str],
     search_q: str,
 ) -> bool:
-    hay = _doc_haystack(doc, raw_fallback)
+    hay = _doc_haystack(doc)
     if user_keywords and not any(_keyword_matches_hay(k, hay) for k in user_keywords):
         return False
     q = (search_q or "").strip().lower()
@@ -72,60 +89,55 @@ def _matches_feed_filters(
     return True
 
 
-def _article_full_text(doc: dict, raw_fallback: Optional[dict] = None) -> str:
-    """Full article body for detail views."""
-    raw = raw_fallback or {}
-    return (
-        doc.get("clean_text")
-        or raw.get("body_text")
-        or doc.get("body_text")
-        or ""
-    )
+def _article_full_text(doc: dict) -> str:
+    """Full article body for detail views (processed fields only)."""
+    return doc.get("clean_text") or doc.get("body_text") or ""
 
 
-def _article_card_summary(doc: dict, raw_fallback: Optional[dict] = None) -> str:
-    """Short summary for feed cards (pipeline extractive summary)."""
-    raw = raw_fallback or {}
-    return doc.get("summary") or raw.get("summary") or ""
+def _article_card_summary(doc: dict) -> str:
+    """Short summary for feed cards."""
+    return doc.get("summary") or ""
 
 
-def article_to_api_dict(doc: dict, raw_fallback: Optional[dict] = None) -> dict:
-    """Shape for mobile/web clients."""
+def article_to_api_dict(doc: dict, *, for_list: bool = False) -> dict:
+    """Shape for mobile/web clients. Processed documents only — no raw_articles."""
     cid = _oid_str(doc)
-    title = doc.get("title") or (raw_fallback or {}).get("title") or ""
-    summary = _article_card_summary(doc, raw_fallback)
-    full_text = _article_full_text(doc, raw_fallback)
+    title = doc.get("title") or ""
+    summary = _article_card_summary(doc)
+    full_text = _article_full_text(doc)
     if not summary and full_text:
         parts = re.split(r"(?<=[.!?])\s+", full_text.strip())
         summary = " ".join(parts[:2]) if parts else full_text[:400]
-    source = doc.get("source_key") or (raw_fallback or {}).get("source_key") or ""
-    published = doc.get("published_at") or (raw_fallback or {}).get("published_at")
+    source = doc.get("source_key") or ""
+    published = doc.get("published_at")
     if isinstance(published, datetime):
         published = published.isoformat()
     label = doc.get("credibility_label")
     labels_map = doc.get("credibility_labels_map") or ID_LABELS
     prob = doc.get("credibility_max_prob")
-    return {
+    payload: dict[str, Any] = {
         "id": cid,
         "title": title,
         "summary": summary,
         "excerpt": summary,
-        "content": full_text,
-        "full_content": full_text,
         "source": source,
         "published_at": published,
-        "canonical_url": doc.get("canonical_url") or (raw_fallback or {}).get("canonical_url"),
+        "canonical_url": doc.get("canonical_url") or doc.get("raw_canonical_url"),
         "credibility": {
             "label_code": label,
             "label": labels_map.get(label, labels_map.get(str(label))) if isinstance(labels_map, dict) else None,
             "max_prob": prob,
             "probs": doc.get("credibility_probs"),
         },
-        "entities": doc.get("entities") or [],
         "topic_keywords": doc.get("topic_keywords") or [],
         "like_count": 0,
         "dislike_count": 0,
     }
+    if not for_list:
+        payload["content"] = full_text
+        payload["full_content"] = full_text
+        payload["entities"] = doc.get("entities") or []
+    return payload
 
 
 def hydrate_article_reaction_counts(items: list[dict]) -> None:
@@ -167,6 +179,29 @@ def hydrate_article_reaction_counts(items: list[dict]) -> None:
         it["upvotes"] = t["likes"]
 
 
+def _search_filter_clause(q: str) -> dict:
+    """Mongo pre-filter for explore search (processed fields only)."""
+    escaped = re.escape(q.strip())
+    if not escaped:
+        return {}
+    return {
+        "$or": [
+            {"title": {"$regex": escaped, "$options": "i"}},
+            {"summary": {"$regex": escaped, "$options": "i"}},
+            {"clean_text": {"$regex": escaped, "$options": "i"}},
+            {"topic_keywords": {"$regex": escaped, "$options": "i"}},
+        ]
+    }
+
+
+def _merge_query(base: dict, extra: dict) -> dict:
+    if not extra:
+        return base
+    if not base:
+        return extra
+    return {"$and": [base, extra]}
+
+
 def get_user_feed(
     user: User,
     limit: int = 50,
@@ -195,32 +230,29 @@ def get_user_feed_page(
         return {"results": [], "next_cursor": None, "has_more": False}
 
     proc = processed_collection()
-    raw_col = raw_collection()
     page_size = max(1, min(int(limit or 30), 100))
     batch_size = max(page_size * 4, 80)
-    query = _query_after_cursor(cursor or "")
+    query = _merge_query(_query_after_cursor(cursor or ""), _search_filter_clause(q))
 
     out: list[dict] = []
     last_seen_doc: Optional[dict] = None
+    last_batch_len = 0
 
     while len(out) < page_size:
         docs = list(
-            proc.find(query)
+            proc.find(query, PROCESSED_FEED_PROJECTION)
             .sort([("processed_at", -1), ("_id", -1)])
             .limit(batch_size)
         )
+        last_batch_len = len(docs)
         if not docs:
             break
 
         for doc in docs:
             last_seen_doc = doc
-            raw_doc = None
-            url = doc.get("canonical_url") or doc.get("raw_canonical_url")
-            if url:
-                raw_doc = raw_col.find_one({"canonical_url": url})
-            if not _matches_feed_filters(doc, raw_doc, keywords, q):
+            if not _matches_feed_filters(doc, keywords, q):
                 continue
-            out.append(article_to_api_dict(doc, raw_doc))
+            out.append(article_to_api_dict(doc, for_list=True))
             if len(out) >= page_size:
                 break
 
@@ -230,72 +262,49 @@ def get_user_feed_page(
         next_scan_cursor = _cursor_payload_from_doc(docs[-1])
         if not next_scan_cursor:
             break
-        query = _query_after_cursor(next_scan_cursor)
+        query = _merge_query(_query_after_cursor(next_scan_cursor), _search_filter_clause(q))
 
     next_cursor = _cursor_payload_from_doc(last_seen_doc or {})
     has_more = False
-    if next_cursor and last_seen_doc is not None:
-        probe_query = _query_after_cursor(next_cursor)
-        while True:
-            docs = list(
-                proc.find(probe_query)
-                .sort([("processed_at", -1), ("_id", -1)])
-                .limit(batch_size)
-            )
-            if not docs:
-                break
-            for doc in docs:
-                raw_doc = None
-                url = doc.get("canonical_url") or doc.get("raw_canonical_url")
-                if url:
-                    raw_doc = raw_col.find_one({"canonical_url": url})
-                if _matches_feed_filters(doc, raw_doc, keywords, q):
-                    has_more = True
+    if next_cursor and last_seen_doc is not None and last_batch_len >= batch_size:
+        if len(out) >= page_size:
+            has_more = True
+        else:
+            probe_query = _merge_query(_query_after_cursor(next_cursor), _search_filter_clause(q))
+            while True:
+                docs = list(
+                    proc.find(probe_query, PROCESSED_FEED_PROJECTION)
+                    .sort([("processed_at", -1), ("_id", -1)])
+                    .limit(batch_size)
+                )
+                if not docs:
                     break
-            if has_more:
-                break
-            next_scan_cursor = _cursor_payload_from_doc(docs[-1])
-            if not next_scan_cursor:
-                break
-            probe_query = _query_after_cursor(next_scan_cursor)
+                for doc in docs:
+                    if _matches_feed_filters(doc, keywords, q):
+                        has_more = True
+                        break
+                if has_more:
+                    break
+                next_scan_cursor = _cursor_payload_from_doc(docs[-1])
+                if not next_scan_cursor:
+                    break
+                probe_query = _merge_query(_query_after_cursor(next_scan_cursor), _search_filter_clause(q))
 
     hydrate_article_reaction_counts(out)
     return {"results": out, "next_cursor": next_cursor if has_more else None, "has_more": has_more}
 
 
 def get_article_by_id(article_id: str, user: User) -> Optional[dict]:
-    """Load processed article by Mongo _id or by canonical_url."""
+    """Load processed article by Mongo _id or canonical_url. No raw_articles exposure."""
     proc = processed_collection()
-    raw_col = raw_collection()
     doc = None
-    raw_doc = None
     if ObjectId.is_valid(article_id):
         doc = proc.find_one({"_id": ObjectId(article_id)})
     if doc is None:
         doc = proc.find_one({"canonical_url": article_id})
     if doc is None:
-        if ObjectId.is_valid(article_id):
-            raw_doc = raw_col.find_one({"_id": ObjectId(article_id)})
-        if raw_doc is None:
-            raw_doc = raw_col.find_one({"canonical_url": article_id})
-        if raw_doc:
-            stub = {
-                "_id": raw_doc.get("_id"),
-                "title": raw_doc.get("title"),
-                "summary": raw_doc.get("body_text"),
-                "clean_text": raw_doc.get("body_text"),
-                "canonical_url": raw_doc.get("canonical_url"),
-                "source_key": raw_doc.get("source_key"),
-                "published_at": raw_doc.get("published_at"),
-            }
-            item = article_to_api_dict(stub, raw_doc)
-            hydrate_article_reaction_counts([item])
-            return item
         return None
-    url = doc.get("canonical_url") or doc.get("raw_canonical_url")
-    if url:
-        raw_doc = raw_col.find_one({"canonical_url": url})
-    item = article_to_api_dict(doc, raw_doc)
+    item = article_to_api_dict(doc, for_list=False)
     hydrate_article_reaction_counts([item])
     return item
 
@@ -312,8 +321,6 @@ def upsert_user_keywords(user: User, keywords: list[str]) -> dict[str, Any]:
         s = re.sub(r"\s+", " ", str(k).strip().lower())
         if s and s not in cleaned:
             cleaned.append(s)
-    from datetime import timezone
-
     now = datetime.now(timezone.utc)
     col.update_one(
         {"user_id": user.pk},
@@ -323,7 +330,7 @@ def upsert_user_keywords(user: User, keywords: list[str]) -> dict[str, Any]:
     return {"user_id": str(user.pk), "keywords": cleaned}
 
 
-def get_explore_feed(limit: int = 200, *, search_q: str = "") -> list[dict]:
+def get_explore_feed(limit: int = 50, *, search_q: str = "") -> list[dict]:
     page = get_explore_feed_page(limit=limit, search_q=search_q, cursor=None)
     return page["results"]
 
@@ -356,18 +363,13 @@ def _query_after_cursor(cursor: str) -> dict:
 
 
 def _explore_rank_score(doc: dict, now: datetime) -> float:
-    """
-    Lightweight ranking score for Explore.
-    - Recency: newer articles rank higher.
-    - Credibility: real/high-confidence > suspicious > fake.
-    """
     processed_at = doc.get("processed_at")
     if isinstance(processed_at, datetime):
         dt = processed_at if processed_at.tzinfo else processed_at.replace(tzinfo=timezone.utc)
     else:
         dt = now
     age_hours = max(0.0, (now - dt).total_seconds() / 3600.0)
-    recency_score = 1.0 / (1.0 + age_hours / 12.0)  # half-life-ish around 12 hours
+    recency_score = 1.0 / (1.0 + age_hours / 12.0)
 
     cred = 0.55
     label = doc.get("credibility_label")
@@ -384,9 +386,6 @@ def _explore_rank_score(doc: dict, now: datetime) -> float:
 
 
 def _rank_for_diversity(docs: list[dict], now: datetime, take: int) -> list[dict]:
-    """
-    Greedy rerank to diversify sources (similar to social feed source-mixing).
-    """
     ranked = sorted(docs, key=lambda d: _explore_rank_score(d, now), reverse=True)
     source_counts: dict[str, int] = {}
     chosen: list[dict] = []
@@ -414,76 +413,70 @@ def get_explore_feed_page(
     search_q: str = "",
     cursor: Optional[str] = None,
 ) -> dict[str, Any]:
-    """Cursor-based Explore page for infinite scrolling."""
+    """Cursor-based Explore page for infinite scrolling (processed_articles only)."""
     q = (search_q or "").strip().lower()
-    proc = processed_collection()
-    raw_col = raw_collection()
-
     page_size = max(1, min(int(limit or 30), 200))
+    cache_key = explore_cache_key(limit=page_size, q=q, cursor=cursor)
+    if not q and not cursor:
+        cached = get_cached_explore(cache_key)
+        if cached is not None:
+            return cached
+
+    proc = processed_collection()
     batch_size = max(page_size * 4, 80)
-    query = _query_after_cursor(cursor or "")
+    query = _merge_query(_query_after_cursor(cursor or ""), _search_filter_clause(q))
 
     out: list[dict] = []
     last_seen_doc: Optional[dict] = None
     now = datetime.now(timezone.utc)
+    last_batch_len = 0
 
     while len(out) < page_size:
         docs = list(
-            proc.find(query)
+            proc.find(query, PROCESSED_FEED_PROJECTION)
             .sort([("processed_at", -1), ("_id", -1)])
             .limit(batch_size)
         )
+        last_batch_len = len(docs)
         if not docs:
             break
-        # No search filter: keep cursor pagination strict so every article appears eventually.
+
         if not q:
             ranked_batch = _rank_for_diversity(docs[:page_size], now, take=page_size)
             for doc in ranked_batch:
-                raw_doc = None
-                url = doc.get("canonical_url") or doc.get("raw_canonical_url")
-                if url:
-                    raw_doc = raw_col.find_one({"canonical_url": url})
-                out.append(article_to_api_dict(doc, raw_doc))
+                out.append(article_to_api_dict(doc, for_list=True))
             last_seen_doc = docs[min(page_size, len(docs)) - 1]
             break
 
         filtered: list[dict] = []
         for doc in docs:
             last_seen_doc = doc
-            if q:
-                raw_doc = None
-                url = doc.get("canonical_url") or doc.get("raw_canonical_url")
-                if url:
-                    raw_doc = raw_col.find_one({"canonical_url": url})
-                hay = _doc_haystack(doc, raw_doc)
-                if q not in hay:
-                    continue
+            hay = _doc_haystack(doc)
+            if q not in hay:
+                continue
             filtered.append(doc)
 
         ranked_batch = _rank_for_diversity(filtered, now, take=page_size - len(out))
         for doc in ranked_batch:
-            raw_doc = None
-            url = doc.get("canonical_url") or doc.get("raw_canonical_url")
-            if url:
-                raw_doc = raw_col.find_one({"canonical_url": url})
-            out.append(article_to_api_dict(doc, raw_doc))
+            out.append(article_to_api_dict(doc, for_list=True))
             if len(out) >= page_size:
                 break
-        # advance scan window to avoid rescanning already-considered documents
+
+        if len(out) >= page_size:
+            break
+
         next_scan_cursor = _cursor_payload_from_doc(docs[-1])
         if not next_scan_cursor:
             break
-        query = _query_after_cursor(next_scan_cursor)
+        query = _merge_query(_query_after_cursor(next_scan_cursor), _search_filter_clause(q))
 
     next_cursor = _cursor_payload_from_doc(last_seen_doc or {})
-    has_more = False
-    if next_cursor:
-        has_more = (
-            proc.find_one(
-                _query_after_cursor(next_cursor),
-                sort=[("processed_at", -1), ("_id", -1)],
-            )
-            is not None
-        )
+    has_more = bool(next_cursor and last_batch_len >= batch_size)
+    if has_more and not q and len(out) < page_size:
+        has_more = last_batch_len >= batch_size
+
     hydrate_article_reaction_counts(out)
-    return {"results": out, "next_cursor": next_cursor if has_more else None, "has_more": has_more}
+    page = {"results": out, "next_cursor": next_cursor if has_more else None, "has_more": has_more}
+    if not q and not cursor:
+        set_cached_explore(cache_key, page)
+    return page

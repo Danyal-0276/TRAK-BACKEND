@@ -10,6 +10,18 @@ User = get_user_model()
 
 @override_settings(DEBUG=True, SECURE_SSL_REDIRECT=False)
 class RegisterSerializerTests(APITestCase):
+    def test_register_rejects_duplicate_email(self):
+        User.objects.create_user(email="existing@example.com", password="StrongPass123!", role="user")
+        serializer = RegisterSerializer(
+            data={
+                "email": "existing@example.com",
+                "password": "StrongPass123!",
+                "password_confirm": "StrongPass123!",
+            }
+        )
+        self.assertFalse(serializer.is_valid())
+        self.assertIn("email", serializer.errors)
+
     def test_register_serializer_never_assigns_admin_role(self):
         payload = {
             "email": "danyal@admin.com",
