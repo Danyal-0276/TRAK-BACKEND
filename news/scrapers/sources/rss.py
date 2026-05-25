@@ -13,18 +13,11 @@ from news.scrapers.extract.generic import extract_generic
 from news.scrapers import robots as robots_util
 from news.scrapers import storage
 from news.scrapers.site_key import source_key_for_article_url
-from news.scrapers.sources_catalog import RSS_FEED_URLS as CATALOG_RSS_FEEDS
+from news.scrape_sources import list_rss_feed_urls
 
 
 def _merged_feed_urls() -> list[str]:
-    seen: set[str] = set()
-    out: list[str] = []
-    for u in CATALOG_RSS_FEEDS + list(getattr(settings, "SCRAPER_RSS_FEED_URLS", []) or []):
-        u = (u or "").strip()
-        if u and u not in seen:
-            seen.add(u)
-            out.append(u)
-    return out
+    return list_rss_feed_urls(fallback_to_catalog=True)
 
 
 def _round_robin_entries(
@@ -71,7 +64,7 @@ def run(client: PoliteHttpClient, *, limit: int = 30) -> dict:
             "inserted": 0,
             "skipped": 0,
             "source": "rss",
-            "note": "no RSS feeds — add URLs in news/scrapers/sources_catalog.py (RSS_FEED_URLS) or settings/env",
+            "note": "no RSS feeds — add sources under Admin → Settings → Manage Connection (URL required)",
         }
 
     queue = _round_robin_entries(client, feeds, ua)

@@ -5,6 +5,12 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from news.services import article_query
+from news.tts_service import (
+    plan_article_tts_segments,
+    synthesize_article_tts,
+    synthesize_article_tts_segment,
+    synthesize_article_tts_segments_batch,
+)
 from news.mongo_db import (
     article_reports_collection,
     bookmarks_collection,
@@ -113,18 +119,14 @@ class UserBootstrapView(APIView):
 
 
 class PlatformCategoriesView(APIView):
-    """Read-only platform categories/connections from admin settings."""
+    """Read-only platform categories/connections for onboarding and browse screens."""
 
     permission_classes = [permissions.IsAuthenticated]
 
     def get(self, _request):
-        row = user_preferences_collection().find_one({"scope": "admin_settings"}) or {}
-        return Response(
-            {
-                "categories": row.get("categories") or [],
-                "connections": row.get("connections") or [],
-            }
-        )
+        from news.platform_taxonomy import get_public_taxonomy
+
+        return Response(get_public_taxonomy())
 
 
 class UserKeywordsView(APIView):
@@ -181,6 +183,103 @@ class ArticleDetailView(APIView):
         if doc is None:
             return Response({"detail": "Not found"}, status=status.HTTP_404_NOT_FOUND)
         return Response(doc)
+
+
+class ArticleTtsView(APIView):
+    """Text-to-speech — merged audio (legacy). Prefer plan + chunk for streaming."""
+
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request):
+        text = str(request.data.get("text") or "").strip()
+        language = str(request.data.get("language") or "english").lower().strip()
+        if language not in ("english", "urdu"):
+            return Response(
+                {"detail": "language must be 'english' or 'urdu'"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if not text:
+            return Response({"detail": "text is required"}, status=status.HTTP_400_BAD_REQUEST)
+        try:
+            payload = synthesize_article_tts(text, language=language)
+        except ValueError as e:
+            return Response({"detail": str(e)}, status=status.HTTP_400_BAD_REQUEST)
+        except RuntimeError as e:
+            return Response({"detail": str(e)}, status=status.HTTP_502_BAD_GATEWAY)
+        return Response(payload)
+
+
+class ArticleTtsPlanView(APIView):
+    """Return paragraph segments for progressive TTS (no synthesis)."""
+
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request):
+        text = str(request.data.get("text") or "").strip()
+        if not text:
+            return Response({"detail": "text is required"}, status=status.HTTP_400_BAD_REQUEST)
+        try:
+            segments = plan_article_tts_segments(text)
+        except ValueError as e:
+            return Response({"detail": str(e)}, status=status.HTTP_400_BAD_REQUEST)
+        return Response(
+            {
+                "segments": segments,
+                "total": len(segments),
+                "first_chunk_chars": segments[0][:120] if segments else "",
+            }
+        )
+
+
+class ArticleTtsChunkView(APIView):
+    """Synthesize a single segment — used while the next segment is prefetched."""
+
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request):
+        text = str(request.data.get("text") or "").strip()
+        language = str(request.data.get("language") or "english").lower().strip()
+        if language not in ("english", "urdu"):
+            return Response(
+                {"detail": "language must be 'english' or 'urdu'"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if not text:
+            return Response({"detail": "text is required"}, status=status.HTTP_400_BAD_REQUEST)
+        try:
+            payload = synthesize_article_tts_segment(text, language=language)
+        except ValueError as e:
+            return Response({"detail": str(e)}, status=status.HTTP_400_BAD_REQUEST)
+        except RuntimeError as e:
+            return Response({"detail": str(e)}, status=status.HTTP_502_BAD_GATEWAY)
+        return Response(payload)
+
+
+class ArticleTtsChunksView(APIView):
+    """Synthesize up to 4 segments in parallel (faster prefetch)."""
+
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request):
+        language = str(request.data.get("language") or "english").lower().strip()
+        if language not in ("english", "urdu"):
+            return Response(
+                {"detail": "language must be 'english' or 'urdu'"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        raw = request.data.get("segments")
+        if not isinstance(raw, list) or not raw:
+            return Response({"detail": "segments must be a non-empty list"}, status=status.HTTP_400_BAD_REQUEST)
+        segments = [str(s or "").strip() for s in raw if str(s or "").strip()]
+        if not segments:
+            return Response({"detail": "segments must contain text"}, status=status.HTTP_400_BAD_REQUEST)
+        try:
+            chunks = synthesize_article_tts_segments_batch(segments, language=language)
+        except ValueError as e:
+            return Response({"detail": str(e)}, status=status.HTTP_400_BAD_REQUEST)
+        except RuntimeError as e:
+            return Response({"detail": str(e)}, status=status.HTTP_502_BAD_GATEWAY)
+        return Response({"chunks": chunks, "count": len(chunks)})
 
 
 class ChatbotView(APIView):

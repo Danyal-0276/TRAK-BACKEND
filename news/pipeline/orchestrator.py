@@ -64,7 +64,7 @@ def process_one_raw(doc: dict) -> dict[str, Any]:
     cleaned = clean_text(combined)
     normalized_text = normalize_for_matching(combined)
     normalized_terms = simple_tokens(combined)
-    cred = predict_credibility(cleaned)
+    cred = predict_credibility(cleaned, title=title)
     sum_result = summarize_text(cleaned, title=title)
     summary = sum_result["summary"]
     entities = extract_entities(cleaned, title=title)
@@ -87,6 +87,8 @@ def process_one_raw(doc: dict) -> dict[str, Any]:
         "processed_at": now,
         "language": "en",
         "model_versions": {
+            "fake_detection": cred.get("fake_detection_model_id"),
+            "fact_checker": cred.get("fact_check_provider") if cred.get("fact_check_enabled") else "disabled",
             "credibility": cred.get("credibility_model_id"),
             "ner": ner_model_id(),
             "summarizer": sum_result.get("summarizer_model_id"),

@@ -10,7 +10,7 @@ from news.services.feed_cache import invalidate_explore_cache
 class Command(BaseCommand):
     help = (
         "Run AI pipeline on pending raw_articles → upsert processed_articles "
-        "(BART summary, clean_text, spaCy NER, topic_keywords). No extra collections."
+        "(HF Space BART summary, fake detection Space, Google fact-check, spaCy NER, topic_keywords)."
     )
 
     def add_arguments(self, parser):
