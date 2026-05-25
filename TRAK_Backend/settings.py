@@ -48,6 +48,23 @@ _render_host = os.environ.get("RENDER_EXTERNAL_HOSTNAME", "").strip()
 if _render_host and _render_host not in ALLOWED_HOSTS:
     ALLOWED_HOSTS.append(_render_host)
 
+# Local mobile app (Wi‑Fi / emulator) — avoid 400 Invalid HTTP_HOST on LAN IP.
+if DEBUG:
+    for _dev_host in ("10.0.2.2", "0.0.0.0"):
+        if _dev_host not in ALLOWED_HOSTS:
+            ALLOWED_HOSTS.append(_dev_host)
+    try:
+        import socket
+
+        _sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        _sock.connect(("8.8.8.8", 80))
+        _lan_ip = _sock.getsockname()[0]
+        _sock.close()
+        if _lan_ip and _lan_ip not in ALLOWED_HOSTS:
+            ALLOWED_HOSTS.append(_lan_ip)
+    except OSError:
+        pass
+
 AUTH_USER_MODEL = "accounts.User"
 
 # Comma-separated emails → role admin on registration.
@@ -423,8 +440,29 @@ MONGODB_REACTIONS_COLLECTION = os.environ.get("MONGODB_REACTIONS_COLLECTION", "r
 CREDIBILITY_MODEL_PATH = os.environ.get("CREDIBILITY_MODEL_PATH", "").strip() or None
 CREDIBILITY_CONFIDENCE_THRESHOLD = float(os.environ.get("CREDIBILITY_CONFIDENCE_THRESHOLD", "0.6"))
 
-# BART news summarizer (Hugging Face hub id or local saved model directory)
-SUMMARIZER_MODEL_ID = os.environ.get("SUMMARIZER_MODEL_ID", "daniB2112/bart-large-cnn-news-summarizer").strip()
+# Hugging Face Spaces + token (private Spaces)
+HF_TOKEN = os.environ.get("HF_TOKEN", "").strip() or None
+FAKE_DETECTION_SPACE_ID = os.environ.get("FAKE_DETECTION_SPACE_ID", "").strip() or None
+FAKE_DETECTION_SPACE_API_NAME = os.environ.get("FAKE_DETECTION_SPACE_API_NAME", "").strip() or None
+SUMMARIZER_SPACE_ID = os.environ.get("SUMMARIZER_SPACE_ID", "").strip() or None
+SUMMARIZER_SPACE_API_NAME = os.environ.get("SUMMARIZER_SPACE_API_NAME", "").strip() or None
+
+# Fact checker — multi-provider second pass after fake-detection Space
+FACT_CHECKER_ENABLED = os.environ.get("FACT_CHECKER_ENABLED", "true").strip()
+# Comma-separated: wikipedia, wikidata, openalex (all free). Optional: google (needs API key)
+FACT_CHECKER_PROVIDERS = os.environ.get(
+    "FACT_CHECKER_PROVIDERS", "wikipedia,wikidata,openalex"
+).strip()
+FACT_CHECKER_PROVIDER = os.environ.get("FACT_CHECKER_PROVIDER", "wikipedia").strip()
+GOOGLE_FACT_CHECK_API_KEY = os.environ.get("GOOGLE_FACT_CHECK_API_KEY", "").strip() or None
+OPENALEX_MAILTO = os.environ.get("OPENALEX_MAILTO", "trak@example.com").strip()
+FACT_CHECKER_MAX_AGE_DAYS = int(os.environ.get("FACT_CHECKER_MAX_AGE_DAYS", "30"))
+FACT_CHECKER_PAGE_SIZE = int(os.environ.get("FACT_CHECKER_PAGE_SIZE", "5"))
+FACT_CHECKER_LANGUAGE = os.environ.get("FACT_CHECKER_LANGUAGE", "en-US").strip()
+FACT_CHECKER_TIMEOUT = float(os.environ.get("FACT_CHECKER_TIMEOUT", "15"))
+
+# BART news summarizer (HF Space preferred; Hub id is fallback when SUMMARIZER_SPACE_ID unset)
+SUMMARIZER_MODEL_ID = os.environ.get("SUMMARIZER_MODEL_ID", "daniB2112/bart-news-summarizer").strip()
 SUMMARIZER_ENABLED = os.environ.get("SUMMARIZER_ENABLED", "true").strip()
 SUMMARIZER_MAX_INPUT_CHARS = int(os.environ.get("SUMMARIZER_MAX_INPUT_CHARS", "4000"))
 SUMMARIZER_MAX_NEW_TOKENS = int(os.environ.get("SUMMARIZER_MAX_NEW_TOKENS", "128"))
@@ -459,3 +497,15 @@ SCRAPER_GENERIC_SOURCES = []
 
 # Path to JSON file (list of site configs, or {"sites": [...]}) relative to BASE_DIR if not absolute.
 SCRAPER_GENERIC_SOURCES_JSON = os.environ.get("SCRAPER_GENERIC_SOURCES_JSON", "").strip() or None
+
+# Bilingual article TTS (Hugging Face Space: abd8433/urdu-tts-api)
+TTS_API_BASE_URL = os.environ.get(
+    "TTS_API_BASE_URL",
+    "https://abd8433-urdu-tts-api.hf.space",
+).strip()
+TTS_API_TIMEOUT_SEC = int(os.environ.get("TTS_API_TIMEOUT_SEC", "360") or "360")
+# Set TTS_PREFER_LOCAL=true to skip HF Space (runs models on this server; first call is slow).
+TTS_PREFER_LOCAL = os.environ.get("TTS_PREFER_LOCAL", "").strip()
+# Fast path: Microsoft Edge neural TTS + Google Translate for Urdu (default on).
+TTS_USE_EDGE = os.environ.get("TTS_USE_EDGE", "true").strip()
+TTS_EDGE_RATE = os.environ.get("TTS_EDGE_RATE", "+12%").strip()

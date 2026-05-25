@@ -32,10 +32,17 @@ feedparser>=6.0.11
 spacy>=3.7,<4
 nltk>=3.8,<4
 
-# Summarizer + credibility (Hugging Face)
+# Summarizer + credibility (Hugging Face Spaces + optional local fallback)
+gradio-client>=1.4,<2
 torch>=2.2,<3
 transformers>=4.40,<5
 sentencepiece>=0.2,<1
+numpy>=1.26,<3
+scipy>=1.11,<2
+
+# Fast article TTS (Edge neural voices; optional fallback to Vits/HF above)
+edge-tts>=7.0,<8
+deep-translator>=1.11,<2
 
 # Optional: FCM push (set FIREBASE_CREDENTIALS_JSON or GOOGLE_APPLICATION_CREDENTIALS)
 firebase-admin>=6.5,<7

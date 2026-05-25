@@ -1,6 +1,17 @@
 # MongoDB collections & AI pipeline
 
-**End-to-end automation:** scrapers ingest into **`raw_articles`** (`pipeline_status: pending`) → **`run_ai_pipeline`** normalizes text, runs the **credibility (fake/suspicious/real)** model, builds **summary**, **entities**, and **`topic_keywords`** → upserts **`processed_articles`** and marks raw **`done`**. The app serves **`/api/user/feed`**: users’ saved **keywords** (`user_keywords`) are matched against each article’s **full haystack** (title, body, `topic_keywords`, entities); optional **`?q=`** narrows results. Re-process old docs by setting raw status back to `pending` or re-running pipeline on new fields only via a future backfill command.
+**End-to-end automation:** scrapers ingest into **`raw_articles`** (`pipeline_status: pending`) → **`run_ai_pipeline`** normalizes text, runs **fake detection (HF Space)**, **Google Fact Check API** (second pass), **BART summary (HF Space)**, **entities**, and **`topic_keywords`** → upserts **`processed_articles`** and marks raw **`done`**.
+
+## AI stages (in order)
+
+1. **Clean text** — strip HTML/URLs
+2. **Fake detection** — `FAKE_DETECTION_SPACE_ID` (Gradio Space)
+3. **Fact checker** — `GOOGLE_FACT_CHECK_API_KEY` + `FACT_CHECKER_ENABLED=true` (Claim Search API)
+4. **Merge** — final `credibility_label` (real/fake/suspicious)
+5. **Summary** — `SUMMARIZER_SPACE_ID` (Gradio Space)
+6. **NER + topic keywords**
+
+Env vars: see `.env.example` (`SUMMARIZER_SPACE_ID`, `FAKE_DETECTION_SPACE_ID`, `GOOGLE_FACT_CHECK_API_KEY`).
 
 Same database name as `MONGODB_RAW_DATABASE` (default `TRAK_DB`).
 

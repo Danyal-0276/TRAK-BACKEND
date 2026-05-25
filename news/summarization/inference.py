@@ -1,6 +1,6 @@
 """
-BART seq2seq summarization via Hugging Face (default: daniB2112/bart-large-cnn-news-summarizer).
-Falls back to extractive (first sentences) if the model is unavailable.
+BART summarization via Hugging Face Space (preferred) or Hub model (fallback).
+Falls back to extractive (first sentences) if unavailable.
 """
 
 from __future__ import annotations
@@ -11,14 +11,25 @@ from typing import Any, Optional
 
 from django.conf import settings
 
+from news.spaces.client import parse_summary_response, preload_space, space_predict
+
 logger = logging.getLogger(__name__)
 
-_DEFAULT_MODEL_ID = "daniB2112/bart-large-cnn-news-summarizer"
+_DEFAULT_MODEL_ID = "daniB2112/bart-news-summarizer"
 
 _model = None
 _tokenizer = None
 _device = None
 _model_id_loaded: str = ""
+
+
+def _summarizer_space_id() -> str:
+    return (getattr(settings, "SUMMARIZER_SPACE_ID", None) or "").strip()
+
+
+def _summarizer_space_api_name() -> Optional[str]:
+    name = (getattr(settings, "SUMMARIZER_SPACE_API_NAME", None) or "").strip()
+    return name or None
 
 
 def _pick_device():
@@ -34,7 +45,6 @@ def _pick_device():
 
 
 def extractive_summary(text: str, max_sentences: int = 2) -> str:
-    """Fallback when HF summarizer is off or fails."""
     text = (text or "").strip()
     if not text:
         return ""
@@ -43,15 +53,31 @@ def extractive_summary(text: str, max_sentences: int = 2) -> str:
 
 
 def _model_source() -> str:
-    return (
-        getattr(settings, "SUMMARIZER_MODEL_ID", None)
-        or _DEFAULT_MODEL_ID
-    ).strip()
+    return (getattr(settings, "SUMMARIZER_MODEL_ID", None) or _DEFAULT_MODEL_ID).strip()
 
 
 def _summarizer_enabled() -> bool:
     raw = str(getattr(settings, "SUMMARIZER_ENABLED", "true")).strip().lower()
     return raw in ("1", "true", "yes", "on")
+
+
+def _summarize_via_space(text: str) -> Optional[dict[str, Any]]:
+    space_id = _summarizer_space_id()
+    if not space_id:
+        return None
+    try:
+        raw = space_predict(space_id, text, api_name=_summarizer_space_api_name())
+        summary = parse_summary_response(raw)
+        if not summary:
+            return None
+        return {
+            "summary": summary[:10000],
+            "summarizer_mode": "bart-space",
+            "summarizer_model_id": f"hf-space:{space_id}",
+        }
+    except Exception as exc:
+        logger.exception("Summarizer Space failed (%s): %s", space_id, exc)
+        return None
 
 
 def _load_hf() -> bool:
@@ -87,6 +113,16 @@ def _load_hf() -> bool:
 def preload_summarizer_model() -> dict[str, Any]:
     if not _summarizer_enabled():
         return {"mode": "extractive", "loaded": False, "reason": "SUMMARIZER_ENABLED=false"}
+
+    space_id = _summarizer_space_id()
+    if space_id:
+        info = preload_space(space_id)
+        return {
+            "mode": "bart-space" if info.get("loaded") else "space-unavailable",
+            "loaded": bool(info.get("loaded")),
+            "space_id": space_id,
+        }
+
     model_id = _model_source()
     if _model is None:
         ok = _load_hf()
@@ -102,7 +138,7 @@ def preload_summarizer_model() -> dict[str, Any]:
 
 def summarize_text(text: str, *, title: str = "") -> dict[str, Any]:
     """
-    Returns summary (str), summarizer_mode ('bart' | 'extractive'), summarizer_model_id (str).
+    Returns summary (str), summarizer_mode ('bart-space' | 'bart' | 'extractive'), summarizer_model_id (str).
     """
     cleaned = (text or "").strip()
     if not cleaned and title:
@@ -121,16 +157,20 @@ def summarize_text(text: str, *, title: str = "") -> dict[str, Any]:
             "summarizer_model_id": "disabled",
         }
 
+    max_chars = int(getattr(settings, "SUMMARIZER_MAX_INPUT_CHARS", 4000))
+    max_new = int(getattr(settings, "SUMMARIZER_MAX_NEW_TOKENS", 128))
+    body = cleaned[:max_chars]
+
+    space_result = _summarize_via_space(body)
+    if space_result:
+        return space_result
+
     if _model is None:
         _load_hf()
 
     if _model is not None and _tokenizer is not None:
         try:
             import torch
-
-            max_chars = int(getattr(settings, "SUMMARIZER_MAX_INPUT_CHARS", 4000))
-            max_new = int(getattr(settings, "SUMMARIZER_MAX_NEW_TOKENS", 128))
-            body = cleaned[:max_chars]
 
             inputs = _tokenizer(
                 body,

@@ -14,7 +14,15 @@ from rest_framework.views import APIView
 
 from accounts.permissions import IsAdminRole, IsSuperAdminRole
 from news.mongo_db import notifications_collection, processed_collection, raw_collection, user_preferences_collection
+from news.credibility.score import (
+    compute_credibility_score_from_doc,
+    effective_credibility_probs,
+    prob_breakdown,
+    verdict_confidence_percent,
+)
+from admin_panel.analytics_snapshot import build_admin_analytics_snapshot
 from news.pipeline import orchestrator
+from news import platform_taxonomy
 from notifications.realtime import fanout_notification
 
 User = get_user_model()
@@ -49,19 +57,59 @@ def _serialize_raw(doc: dict) -> dict:
     }
 
 
+def _credibility_label_prob(doc: dict) -> float | None:
+    """Probability for the final credibility_label (not argmax across classes)."""
+    label = doc.get("credibility_label")
+    probs = effective_credibility_probs(doc) or doc.get("credibility_probs")
+    if label is not None and isinstance(probs, list):
+        try:
+            idx = int(label)
+            if 0 <= idx < len(probs):
+                return float(probs[idx])
+        except (TypeError, ValueError):
+            pass
+    max_prob = doc.get("credibility_max_prob")
+    return float(max_prob) if max_prob is not None else None
+
+
+def _credibility_label_name(doc: dict) -> str | None:
+    label = doc.get("credibility_label")
+    if label is None:
+        return None
+    labels_map = doc.get("credibility_labels_map") or {0: "real", 1: "fake", 2: "suspicious"}
+    if isinstance(labels_map, dict):
+        return labels_map.get(label) or labels_map.get(str(label))
+    return str(label)
+
+
 def _serialize_processed(doc: dict) -> dict:
     _id = doc.get("_id")
     pa = doc.get("processed_at")
+    summary = doc.get("summary") or ""
+    eff_probs = effective_credibility_probs(doc)
     return {
         "id": str(_id) if _id is not None else None,
         "scope": "processed",
         "canonical_url": doc.get("canonical_url") or doc.get("raw_canonical_url"),
         "title": doc.get("title"),
-        "description": doc.get("description") or doc.get("summary") or doc.get("excerpt") or doc.get("clean_text") or doc.get("body_text"),
+        "description": doc.get("description") or summary or doc.get("excerpt") or doc.get("clean_text") or doc.get("body_text"),
         "content": doc.get("content") or doc.get("article_text") or doc.get("text") or doc.get("clean_text") or doc.get("normalized_text") or doc.get("body_text"),
         "source_key": doc.get("source_key"),
+        "summary": summary[:500] if summary else "",
+        "topic_keywords": list(doc.get("topic_keywords") or [])[:12],
         "credibility_label": doc.get("credibility_label"),
-        "credibility_probs": doc.get("credibility_probs"),
+        "credibility_label_name": _credibility_label_name(doc),
+        "credibility_probs": eff_probs or doc.get("credibility_probs"),
+        "credibility_label_prob": _credibility_label_prob(doc),
+        "credibility_score": compute_credibility_score_from_doc(doc),
+        "credibility_confidence_pct": verdict_confidence_percent(doc),
+        "credibility_prob_breakdown": prob_breakdown(eff_probs) if eff_probs else None,
+        "credibility_max_prob": doc.get("credibility_max_prob"),
+        "fake_detection_label": doc.get("fake_detection_label"),
+        "fake_detection_max_prob": doc.get("fake_detection_max_prob"),
+        "fact_check_verdict": doc.get("fact_check_verdict"),
+        "fact_check_hits": doc.get("fact_check_hits"),
+        "fact_check_provider": doc.get("fact_check_provider"),
         "moderation_status": doc.get("moderation_status") or "review",
         "processed_at": pa.isoformat() if hasattr(pa, "isoformat") else pa,
     }
@@ -116,31 +164,7 @@ class AdminAnalyticsView(APIView):
     permission_classes = [permissions.IsAuthenticated, IsAdminRole]
 
     def get(self, _request):
-        raw_col = raw_collection()
-        proc_col = processed_collection()
-
-        pipeline_counts: dict[str, int] = {}
-        for doc in raw_col.aggregate(
-            [{"$group": {"_id": "$pipeline_status", "count": {"$sum": 1}}}]
-        ):
-            key = doc["_id"] or "unknown"
-            pipeline_counts[str(key)] = doc["count"]
-
-        cred_counts: dict[str, int] = {}
-        for doc in proc_col.aggregate(
-            [{"$group": {"_id": "$credibility_label", "count": {"$sum": 1}}}]
-        ):
-            key = doc["_id"]
-            cred_counts[str(key) if key is not None else "none"] = doc["count"]
-
-        return Response(
-            {
-                "raw_total": raw_col.estimated_document_count(),
-                "processed_total": proc_col.estimated_document_count(),
-                "raw_by_pipeline_status": pipeline_counts,
-                "processed_by_credibility_label": cred_counts,
-            }
-        )
+        return Response(build_admin_analytics_snapshot())
 
 
 class AdminArticleDetailView(APIView):
@@ -320,14 +344,18 @@ class AdminSettingsView(APIView):
     permission_classes = [permissions.IsAuthenticated, IsAdminRole]
 
     def get(self, _request):
+        platform_taxonomy.seed_taxonomy_if_empty()
         row = user_preferences_collection().find_one({"scope": "admin_settings"}) or {}
+        categories = platform_taxonomy.list_categories()
+        connections = platform_taxonomy.list_connections()
         return Response(
             {
                 "notifications_enabled_default": bool(row.get("notifications_enabled_default", True)),
                 "allow_external_connections": bool(row.get("allow_external_connections", True)),
                 "moderation_mode": str(row.get("moderation_mode") or "review"),
-                "categories": row.get("categories") or [],
-                "connections": row.get("connections") or [],
+                "categories": categories,
+                "connections": connections,
+                "tags_with_subcategories": platform_taxonomy.tags_with_subcategories_map(categories),
                 "language": str(row.get("language") or "English"),
                 "timezone": str(row.get("timezone") or "UTC"),
             }
@@ -338,15 +366,22 @@ class AdminSettingsView(APIView):
             "notifications_enabled_default",
             "allow_external_connections",
             "moderation_mode",
-            "categories",
-            "connections",
             "language",
             "timezone",
         }
         updates = {k: request.data.get(k) for k in allowed if k in request.data}
-        if not updates:
+        if "categories" in request.data:
+            platform_taxonomy.replace_categories(request.data.get("categories") or [])
+        if "connections" in request.data:
+            platform_taxonomy.replace_connections(request.data.get("connections") or [])
+        if updates:
+            user_preferences_collection().update_one(
+                {"scope": "admin_settings"},
+                {"$set": updates},
+                upsert=True,
+            )
+        if not updates and "categories" not in request.data and "connections" not in request.data:
             return Response({"detail": "No updatable fields provided."}, status=status.HTTP_400_BAD_REQUEST)
-        user_preferences_collection().update_one({"scope": "admin_settings"}, {"$set": updates}, upsert=True)
         return self.get(request)
 
 
@@ -405,3 +440,117 @@ class AdminNotificationsView(APIView):
             },
         )
         return Response({"detail": "Notification created."}, status=status.HTTP_201_CREATED)
+
+
+class AdminCategoriesView(APIView):
+    """CRUD for onboarding/platform categories (MongoDB admin_settings.categories)."""
+
+    permission_classes = [permissions.IsAuthenticated, IsAdminRole]
+
+    def get(self, _request):
+        return Response({"categories": platform_taxonomy.list_categories()})
+
+    def post(self, request):
+        name = str(request.data.get("name") or "").strip()
+        subs = request.data.get("subcategories") or []
+        if not isinstance(subs, list):
+            return Response({"detail": "subcategories must be a list"}, status=status.HTTP_400_BAD_REQUEST)
+        try:
+            created = platform_taxonomy.create_category(name, subs)
+            return Response(created, status=status.HTTP_201_CREATED)
+        except ValueError as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+
+class AdminCategoryDetailView(APIView):
+    permission_classes = [permissions.IsAuthenticated, IsAdminRole]
+
+    def patch(self, request, category_slug):
+        try:
+            updated = platform_taxonomy.update_category(
+                category_slug,
+                name=request.data.get("name"),
+                active=request.data.get("active") if "active" in request.data else None,
+            )
+            return Response(updated)
+        except ValueError as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_404_NOT_FOUND)
+
+    def delete(self, _request, category_slug):
+        try:
+            platform_taxonomy.delete_category(category_slug)
+            return Response(status=status.HTTP_204_NO_CONTENT)
+        except ValueError as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_404_NOT_FOUND)
+
+
+class AdminCategorySubcategoriesView(APIView):
+    permission_classes = [permissions.IsAuthenticated, IsAdminRole]
+
+    def post(self, request, category_slug):
+        name = str(request.data.get("name") or "").strip()
+        try:
+            created = platform_taxonomy.add_subcategory(category_slug, name)
+            return Response(created, status=status.HTTP_201_CREATED)
+        except ValueError as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+
+class AdminSubcategoryDetailView(APIView):
+    permission_classes = [permissions.IsAuthenticated, IsAdminRole]
+
+    def patch(self, request, category_slug, sub_slug):
+        name = request.data.get("name")
+        if not name:
+            return Response({"detail": "name is required"}, status=status.HTTP_400_BAD_REQUEST)
+        try:
+            updated = platform_taxonomy.update_subcategory(category_slug, sub_slug, name=str(name))
+            return Response(updated)
+        except ValueError as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_404_NOT_FOUND)
+
+    def delete(self, _request, category_slug, sub_slug):
+        try:
+            platform_taxonomy.delete_subcategory(category_slug, sub_slug)
+            return Response(status=status.HTTP_204_NO_CONTENT)
+        except ValueError as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_404_NOT_FOUND)
+
+
+class AdminConnectionsView(APIView):
+    permission_classes = [permissions.IsAuthenticated, IsAdminRole]
+
+    def get(self, _request):
+        return Response({"connections": platform_taxonomy.list_connections()})
+
+    def post(self, request):
+        name = str(request.data.get("name") or "").strip()
+        url = str(request.data.get("url") or "").strip()
+        try:
+            created = platform_taxonomy.create_connection(name, url)
+            return Response(created, status=status.HTTP_201_CREATED)
+        except ValueError as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+
+class AdminConnectionDetailView(APIView):
+    permission_classes = [permissions.IsAuthenticated, IsAdminRole]
+
+    def patch(self, request, connection_slug):
+        try:
+            updated = platform_taxonomy.update_connection(
+                connection_slug,
+                name=request.data.get("name"),
+                url=request.data.get("url") if "url" in request.data else None,
+                active=request.data.get("active") if "active" in request.data else None,
+            )
+            return Response(updated)
+        except ValueError as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_404_NOT_FOUND)
+
+    def delete(self, _request, connection_slug):
+        try:
+            platform_taxonomy.delete_connection(connection_slug)
+            return Response(status=status.HTTP_204_NO_CONTENT)
+        except ValueError as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_404_NOT_FOUND)

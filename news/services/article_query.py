@@ -7,6 +7,10 @@ from typing import Any, Optional
 from bson import ObjectId
 from django.contrib.auth import get_user_model
 
+from news.credibility.score import (
+    compute_credibility_score_from_doc,
+    effective_credibility_probs,
+)
 from news.mongo_db import processed_collection, reactions_collection, user_keywords_collection
 from news.services.feed_cache import explore_cache_key, get_cached_explore, set_cached_explore
 
@@ -114,7 +118,15 @@ def article_to_api_dict(doc: dict, *, for_list: bool = False) -> dict:
         published = published.isoformat()
     label = doc.get("credibility_label")
     labels_map = doc.get("credibility_labels_map") or ID_LABELS
+    probs = effective_credibility_probs(doc) or doc.get("credibility_probs")
     prob = doc.get("credibility_max_prob")
+    if label is not None and isinstance(probs, list):
+        try:
+            idx = int(label)
+            if 0 <= idx < len(probs):
+                prob = float(probs[idx])
+        except (TypeError, ValueError):
+            pass
     payload: dict[str, Any] = {
         "id": cid,
         "title": title,
@@ -127,7 +139,15 @@ def article_to_api_dict(doc: dict, *, for_list: bool = False) -> dict:
             "label_code": label,
             "label": labels_map.get(label, labels_map.get(str(label))) if isinstance(labels_map, dict) else None,
             "max_prob": prob,
-            "probs": doc.get("credibility_probs"),
+            "score": compute_credibility_score_from_doc(doc),
+            "probs": probs,
+            "fake_detection_label": doc.get("fake_detection_label"),
+            "fact_check_verdict": doc.get("fact_check_verdict"),
+            "fact_check_hits": doc.get("fact_check_hits"),
+            "fact_check_providers": doc.get("fact_check_providers_used") or [],
+            "fact_check_results": doc.get("fact_check_results") or [],
+            "fact_check_ratings": doc.get("fact_check_textual_ratings") or [],
+            "fact_check_sources": doc.get("fact_check_urls") or [],
         },
         "topic_keywords": doc.get("topic_keywords") or [],
         "like_count": 0,

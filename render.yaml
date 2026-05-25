@@ -21,10 +21,19 @@ services:
         value: trak_django
       - key: MONGODB_RAW_DATABASE
         value: TRAK_DB
+      - key: SUMMARIZER_SPACE_ID
+        value: daniB2112/bart-news-summarizer
+      - key: FAKE_DETECTION_SPACE_ID
+        value: abd8433/fake-news-detection
       - key: SUMMARIZER_MODEL_ID
-        value: daniB2112/bart-large-cnn-news-summarizer
+        value: daniB2112/bart-news-summarizer
       - key: SUMMARIZER_ENABLED
-        value: "false"
+        value: "true"
+      - key: FACT_CHECKER_ENABLED
+        value: "true"
+      - key: FACT_CHECKER_PROVIDERS
+        value: wikipedia,wikidata,openalex
+      # Optional: FACT_CHECKER_PROVIDER=google + GOOGLE_FACT_CHECK_API_KEY secret
       - key: PASSWORD_RESET_FRONTEND_URL
         value: https://trak-fyp.netlify.app/reset-password
       - key: SOCIAL_AUTH_FRONTEND_URL
