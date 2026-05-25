@@ -12,6 +12,7 @@ from typing import Any
 
 from news.credibility.inference import predict_credibility
 from news.mongo_db import processed_collection, raw_collection
+from news.notifications.keyword_alerts import notify_keyword_matches_for_article
 from news.pipeline.keywords import extract_topic_keywords
 from news.pipeline.ner import extract_entities, ner_model_id
 from news.summarization.inference import summarize_text
@@ -99,11 +100,17 @@ def process_one_raw(doc: dict) -> dict[str, Any]:
 
     proc = processed_collection()
     proc.replace_one({"canonical_url": canonical}, processed_doc, upsert=True)
+    stored = proc.find_one({"canonical_url": canonical}) or processed_doc
 
     raw_collection().update_one(
         {"_id": doc["_id"]},
         {"$set": {"pipeline_status": "done", "processed_at": now}},
     )
+
+    try:
+        notify_keyword_matches_for_article(stored)
+    except Exception:
+        pass
 
     return {"ok": True, "canonical_url": canonical}
 
@@ -139,12 +146,30 @@ def run_batch(limit: int = 10) -> dict[str, Any]:
             details.append(r)
         except Exception as e:
             errors += 1
+            err_msg = str(e)[:500]
             col.update_one(
                 {"_id": doc["_id"]},
-                {"$set": {"pipeline_status": "failed", "pipeline_error": str(e)[:500]}},
+                {"$set": {"pipeline_status": "failed", "pipeline_error": err_msg}},
             )
             details.append({"ok": False, "error": str(e), "canonical_url": doc.get("canonical_url")})
-    return {"processed_ok": ok, "errors": errors, "details": details}
+            try:
+                from notifications.admin_alerts import notify_admin_pipeline_error
+
+                notify_admin_pipeline_error(
+                    error=err_msg,
+                    canonical_url=str(doc.get("canonical_url") or ""),
+                    context="run_batch",
+                )
+            except Exception:
+                pass
+    result = {"processed_ok": ok, "errors": errors, "details": details}
+    try:
+        from notifications.admin_alerts import notify_admin_pipeline_batch
+
+        notify_admin_pipeline_batch(processed_ok=ok, errors=errors)
+    except Exception:
+        pass
+    return result
 
 
 def run_until_empty(*, batch_size: int = 50, max_articles: int = 0) -> dict[str, Any]:

@@ -85,6 +85,16 @@ class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
             if stripped != raw_password:
                 password_candidates.append(stripped)
 
+        prev_last_login = None
+        try:
+            lookup_email = attrs.get(username_field)
+            if lookup_email:
+                existing = User.objects.filter(email__iexact=str(lookup_email).strip()).first()
+                if existing:
+                    prev_last_login = existing.last_login
+        except Exception:
+            prev_last_login = None
+
         last_error = None
         data = None
         for candidate in password_candidates:
@@ -98,6 +108,13 @@ class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
 
         if data is None and last_error is not None:
             raise last_error
+
+        try:
+            from notifications.reengagement import maybe_welcome_back_notification
+
+            maybe_welcome_back_notification(self.user, previous_last_login=prev_last_login)
+        except Exception:
+            pass
 
         data["user"] = UserSerializer(self.user).data
         return data
