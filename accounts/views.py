@@ -669,9 +669,17 @@ class FirebaseLoginView(APIView):
             )
         user = User.objects.filter(email__iexact=email).first()
         is_new_user = user is None
+        prev_last_login = user.last_login if user else None
         if is_new_user:
             user = User.objects.create_user(email=email, password=_random_user_password())
         refresh = RefreshToken.for_user(user)
+        if not is_new_user:
+            try:
+                from notifications.reengagement import maybe_welcome_back_notification
+
+                maybe_welcome_back_notification(user, previous_last_login=prev_last_login)
+            except Exception:
+                pass
         return Response(
             {
                 "refresh": str(refresh),

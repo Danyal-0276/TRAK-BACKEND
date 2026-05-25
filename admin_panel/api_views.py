@@ -23,7 +23,7 @@ from news.credibility.score import (
 from admin_panel.analytics_snapshot import build_admin_analytics_snapshot
 from news.pipeline import orchestrator
 from news import platform_taxonomy
-from notifications.realtime import fanout_notification
+from notifications.delivery import create_notification
 
 User = get_user_model()
 
@@ -209,6 +209,15 @@ class AdminPipelineRunView(APIView):
         except (TypeError, ValueError):
             limit = 10
         result = orchestrator.run_batch(limit=limit)
+        try:
+            from notifications.admin_alerts import notify_admin_pipeline_batch
+
+            notify_admin_pipeline_batch(
+                processed_ok=int(result.get("processed_ok") or 0),
+                errors=int(result.get("errors") or 0),
+            )
+        except Exception:
+            pass
         return Response(result, status=status.HTTP_200_OK)
 
 
@@ -389,7 +398,13 @@ class AdminNotificationsView(APIView):
     permission_classes = [permissions.IsAuthenticated, IsAdminRole]
 
     def get(self, request):
-        rows = list(notifications_collection().find().sort("created_at", -1).limit(300))
+        uid = request.user.pk
+        rows = list(
+            notifications_collection()
+            .find({"user_id": {"$in": [uid, str(uid)]}, "audience": "admin"})
+            .sort("created_at", -1)
+            .limit(300)
+        )
         return Response(
             {
                 "results": [
@@ -398,6 +413,8 @@ class AdminNotificationsView(APIView):
                         "user_id": r.get("user_id"),
                         "type": r.get("type"),
                         "text": r.get("text"),
+                        "details": r.get("details") or "",
+                        "important": bool(r.get("important")),
                         "read": bool(r.get("read")),
                         "created_at": r.get("created_at"),
                     }
@@ -424,20 +441,13 @@ class AdminNotificationsView(APIView):
         }
         if not payload["text"]:
             return Response({"detail": "text is required."}, status=status.HTTP_400_BAD_REQUEST)
-        payload["created_at"] = datetime.now(timezone.utc)
-        payload["updated_at"] = payload["created_at"]
-        inserted = notifications_collection().insert_one(payload)
-        fanout_notification(
+        create_notification(
             user_id,
-            {
-                "id": str(inserted.inserted_id),
-                "type": payload["type"],
-                "text": payload["text"],
-                "details": payload["details"],
-                "important": payload["important"],
-                "read": payload["read"],
-                "created_at": payload["created_at"].isoformat(),
-            },
+            ntype=payload["type"],
+            text=payload["text"],
+            details=payload["details"],
+            important=payload["important"],
+            audience="user",
         )
         return Response({"detail": "Notification created."}, status=status.HTTP_201_CREATED)
 

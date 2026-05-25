@@ -48,9 +48,18 @@ class NotificationsListView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request):
+        uid = request.user.pk
+        tab = str(request.query_params.get("tab") or "all").strip().lower()
+        query = {"user_id": {"$in": [uid, str(uid)]}, "audience": {"$ne": "admin"}}
+        if tab == "keywords":
+            query["type"] = "keyword_match"
+        elif tab == "system":
+            query["type"] = {"$in": ["system", "welcome_back"]}
+        elif tab == "unread":
+            query["read"] = False
         docs = (
             notifications_collection()
-            .find({"user_id": request.user.pk})
+            .find(query)
             .sort("created_at", -1)
             .limit(200)
         )
