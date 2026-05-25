@@ -15,7 +15,7 @@ def fanout_notification(user_id: int | str, notification: dict) -> None:
         from notifications.fcm import send_fcm_to_user
 
         text = str(notification.get("text") or notification.get("message") or "").strip()
-        title = str(notification.get("type") or "TRAK")
+        title = str(notification.get("title") or notification.get("type") or "TRAK")
         send_fcm_to_user(
             user_id,
             title=title[:80] or "TRAK",

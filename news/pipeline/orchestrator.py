@@ -12,6 +12,7 @@ from typing import Any
 
 from news.credibility.inference import predict_credibility
 from news.mongo_db import processed_collection, raw_collection
+from news.notifications.keyword_alerts import notify_keyword_matches_for_article
 from news.pipeline.keywords import extract_topic_keywords
 from news.pipeline.ner import extract_entities, ner_model_id
 from news.summarization.inference import summarize_text
@@ -99,11 +100,17 @@ def process_one_raw(doc: dict) -> dict[str, Any]:
 
     proc = processed_collection()
     proc.replace_one({"canonical_url": canonical}, processed_doc, upsert=True)
+    stored = proc.find_one({"canonical_url": canonical}) or processed_doc
 
     raw_collection().update_one(
         {"_id": doc["_id"]},
         {"$set": {"pipeline_status": "done", "processed_at": now}},
     )
+
+    try:
+        notify_keyword_matches_for_article(stored)
+    except Exception:
+        pass
 
     return {"ok": True, "canonical_url": canonical}
 
