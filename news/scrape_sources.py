@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 from urllib.parse import urlparse
 
 from django.conf import settings
@@ -11,6 +13,7 @@ from news.scrapers.sources_catalog import (
     DAWN_LISTING_URLS,
     DUNYA_LISTING_URLS,
     GENERIC_SITES,
+    RSS_FEED_LABELS,
     RSS_FEED_URLS,
 )
 
@@ -55,22 +58,79 @@ def list_rss_feed_urls(*, fallback_to_catalog: bool = True) -> list[str]:
         if url and url not in seen:
             seen.add(url)
             out.append(url)
-    if out:
-        return out
     if fallback_to_catalog:
-        return _catalog_rss_urls()
-    return []
+        for url in _catalog_rss_urls():
+            if url not in seen:
+                seen.add(url)
+                out.append(url)
+    return out
+
+
+def ingest_sources_summary() -> dict[str, Any]:
+    """
+    Counts for admin dashboard: MongoDB connections vs what scrapers actually use.
+    RSS scraper always merges catalog feeds even when Admin lists few connections.
+    """
+    connections = list_connections()
+    active = [c for c in connections if c.get("active", True)]
+    by_kind: dict[str, int] = {}
+    for c in connections:
+        kind = str(c.get("kind") or "rss").strip().lower() or "rss"
+        by_kind[kind] = by_kind.get(kind, 0) + 1
+
+    rss_at_scrape = list_rss_feed_urls(fallback_to_catalog=True)
+    catalog_rss = _catalog_rss_urls()
+    enabled_generic = sum(1 for s in GENERIC_SITES if s.get("enabled"))
+
+    api_keys = {
+        "currents": bool(getattr(settings, "CURRENTS_API_KEY", "")),
+        "newsdata": bool(getattr(settings, "NEWSDATA_API_KEY", "")),
+        "gnews": bool(getattr(settings, "GNEWS_API_KEY", "")),
+    }
+
+    return {
+        "connections_total": len(connections),
+        "connections_active": len(active),
+        "rss_feeds_used_by_scraper": len(rss_at_scrape),
+        "rss_catalog_feeds": len(catalog_rss),
+        "builtin_scrapers": ["dawn", "dunya"],
+        "generic_sites_enabled": enabled_generic,
+        "api_sources_configured": [k for k, on in api_keys.items() if on],
+        "by_kind": by_kind,
+    }
 
 
 def _display_name_for_feed_url(url: str) -> str:
+    label = RSS_FEED_LABELS.get((url or "").strip())
+    if label:
+        return label
     try:
         host = urlparse(url).netloc.replace("www.", "")
         if not host:
             return "RSS feed"
-        label = host.split(".")[0]
+        parts = [p for p in host.split(".") if p]
+        # feeds.bbci.co.uk → BBC, not "Feeds"
+        if parts and parts[0] in ("feeds", "rss", "www", "m") and len(parts) > 1:
+            label = parts[1]
+        else:
+            label = parts[0] if parts else host
         return label.replace("-", " ").title()
     except Exception:
         return "RSS feed"
+
+
+def connection_display_name(conn: dict[str, Any]) -> str:
+    """Human label for admin UI (fixes stored 'Feeds' names from old syncs)."""
+    url = (conn.get("url") or "").strip()
+    kind = str(conn.get("kind") or "rss").strip().lower()
+    if kind == "rss" and url:
+        return _display_name_for_feed_url(url)
+    name = str(conn.get("name") or "").strip()
+    if name and name.lower() != "feeds":
+        return name
+    if url:
+        return _display_name_for_feed_url(url)
+    return name or str(conn.get("slug") or "Source")
 
 
 def default_connections_from_catalog() -> list[dict]:
@@ -155,6 +215,32 @@ def default_connections_from_catalog() -> list[dict]:
             url=feed_url,
             kind="rss",
             source_key="rss",
+        )
+
+    from django.conf import settings as django_settings
+
+    if getattr(django_settings, "CURRENTS_API_KEY", ""):
+        add(
+            name="Currents API",
+            url="https://api.currentsapi.services/v1/latest-news",
+            kind="currents",
+            source_key="currents",
+        )
+
+    if getattr(django_settings, "NEWSDATA_API_KEY", ""):
+        add(
+            name="NewsData.io",
+            url="https://newsdata.io/api/1/latest",
+            kind="newsdata",
+            source_key="newsdata",
+        )
+
+    if getattr(django_settings, "GNEWS_API_KEY", ""):
+        add(
+            name="GNews",
+            url="https://gnews.io/api/v4/top-headlines",
+            kind="gnews",
+            source_key="gnews",
         )
 
     return out

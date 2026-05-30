@@ -354,6 +354,8 @@ class AdminSettingsView(APIView):
 
     def get(self, _request):
         platform_taxonomy.seed_taxonomy_if_empty()
+        platform_taxonomy.seed_connections_if_empty()
+        platform_taxonomy.merge_catalog_connections()
         row = user_preferences_collection().find_one({"scope": "admin_settings"}) or {}
         categories = platform_taxonomy.list_categories()
         connections = platform_taxonomy.list_connections()

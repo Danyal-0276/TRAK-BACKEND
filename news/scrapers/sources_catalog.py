@@ -4,6 +4,9 @@ Central place for scraper *configuration* (URLs and generic-site definitions).
 - **DAWN_LISTING_URLS / DUNYA_*** — used by built-in `dawn` / `dunya` sources.
 - **RSS_FEED_URLS** — public Atom/RSS URLs (syndication feeds; polite way to discover
   article links). Used only when you run: `manage.py scrape_raw_news --sources rss`
+- **Currents API** — configured via `CURRENTS_API_KEY` in `.env`; source name `currents`.
+- **NewsData.io** — configured via `NEWSDATA_API_KEY` in `.env`; source name `newsdata`.
+- **GNews** — configured via `GNEWS_API_KEY` in `.env`; source name `gnews`.
 - **GENERIC_SITES** — CSS + regex–driven sites. Set **enabled: True** after you tune
   selectors. Entries with **enabled: False** are stored for later and are skipped.
 
@@ -35,24 +38,84 @@ DUNYA_LISTING_URLS = [
 # The RSS runner **round-robins** across feeds (1st item from each feed, then 2nd…)
 # so `--limit N` spreads across outlets instead of filling from the first feed only.
 # Remove any feed that returns errors; respect each outlet’s terms of use.
+#
+# Note: many “RSS” links on publisher homepages are HTML index pages, not feeds.
+#   BBC listing pages → use feeds.bbci.co.uk/…
+#   CNN / NPR index pages → use rss.cnn.com / feeds.npr.org/…
+#   Reuters public RSS is largely discontinued (feeds.reuters.com DNS dead).
+#   geo.tv/rss often returns invalid XML — Geo uses generic_sites (homepage) instead.
 RSS_FEED_URLS: list[str] = [
-    # — International & regional news (English) —
+    # — General / world news —
+    "https://feeds.bbci.co.uk/news/rss.xml",
     "https://feeds.bbci.co.uk/news/world/rss.xml",
+    "http://rss.cnn.com/rss/cnn_topstories.rss",
+    "http://rss.cnn.com/rss/cnn_world.rss",
     "https://www.aljazeera.com/xml/rss/all.xml",
     "https://www.theguardian.com/world/rss",
     "https://feeds.npr.org/1001/rss.xml",
     "https://feeds.apnews.com/rss/apf-topnews",
-    # — Pakistan / South Asia (verify URLs if a feed moves) —
+    "https://rss.dw.com/rdf/rss-en-world",
+    # — Pakistan —
+    "https://www.dawn.com/feeds/home",
+    "https://arynews.tv/feed/",
     "https://tribune.com.pk/feed/",
     "https://www.thenews.com.pk/rss/1/latest-news",
-    # — Technology & industry blogs (RSS) —
+    # — Technology —
     "https://techcrunch.com/feed/",
     "https://feeds.arstechnica.com/arstechnica/index",
     "https://www.theverge.com/rss/index.xml",
     "https://www.wired.com/feed/rss",
-    # — Developer / community —
+    "https://venturebeat.com/feed/",
     "https://dev.to/feed",
+    # — Gaming —
+    "https://feeds.ign.com/ign/all",
+    "https://www.gamespot.com/feeds/news/",
+    "https://www.pcgamer.com/feeds.xml",
+    "https://www.polygon.com/rss/index.xml",
+    "https://kotaku.com/rss",
+    "https://www.rockpapershotgun.com/feed",
+    # — Sports —
+    "https://www.espn.com/espn/rss/news",
+    "https://feeds.bbci.co.uk/sport/rss.xml",
+    # — AI / research blogs —
+    "https://huggingface.co/blog/feed.xml",
+    "https://openai.com/news/rss.xml",
+    "https://deepmind.google/blog/rss.xml",
 ]
+
+# Optional display names for admin connections (URL → label).
+RSS_FEED_LABELS: dict[str, str] = {
+    "https://feeds.bbci.co.uk/news/rss.xml": "BBC News",
+    "https://feeds.bbci.co.uk/news/world/rss.xml": "BBC World",
+    "http://rss.cnn.com/rss/cnn_topstories.rss": "CNN Top Stories",
+    "http://rss.cnn.com/rss/cnn_world.rss": "CNN World",
+    "https://www.aljazeera.com/xml/rss/all.xml": "Al Jazeera",
+    "https://www.theguardian.com/world/rss": "The Guardian World",
+    "https://feeds.npr.org/1001/rss.xml": "NPR News",
+    "https://feeds.apnews.com/rss/apf-topnews": "Associated Press",
+    "https://rss.dw.com/rdf/rss-en-world": "DW News",
+    "https://www.dawn.com/feeds/home": "Dawn",
+    "https://arynews.tv/feed/": "ARY News",
+    "https://tribune.com.pk/feed/": "Express Tribune",
+    "https://www.thenews.com.pk/rss/1/latest-news": "The News International",
+    "https://techcrunch.com/feed/": "TechCrunch",
+    "https://feeds.arstechnica.com/arstechnica/index": "Ars Technica",
+    "https://www.theverge.com/rss/index.xml": "The Verge",
+    "https://www.wired.com/feed/rss": "Wired",
+    "https://venturebeat.com/feed/": "VentureBeat",
+    "https://dev.to/feed": "DEV Community",
+    "https://feeds.ign.com/ign/all": "IGN",
+    "https://www.gamespot.com/feeds/news/": "GameSpot",
+    "https://www.pcgamer.com/feeds.xml": "PC Gamer",
+    "https://www.polygon.com/rss/index.xml": "Polygon",
+    "https://kotaku.com/rss": "Kotaku",
+    "https://www.rockpapershotgun.com/feed": "Rock Paper Shotgun",
+    "https://www.espn.com/espn/rss/news": "ESPN",
+    "https://feeds.bbci.co.uk/sport/rss.xml": "BBC Sport",
+    "https://huggingface.co/blog/feed.xml": "Hugging Face Blog",
+    "https://openai.com/news/rss.xml": "OpenAI News",
+    "https://deepmind.google/blog/rss.xml": "Google DeepMind",
+}
 
 # --- Config-driven sites (source: generic_sites) — merged with settings + JSON ---
 # Set **enabled: False** to skip a site without removing its config.

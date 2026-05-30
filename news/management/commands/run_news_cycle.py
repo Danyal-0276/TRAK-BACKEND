@@ -25,8 +25,8 @@ class Command(BaseCommand):
         parser.add_argument(
             "--sources",
             nargs="+",
-            default=["dawn", "dunya", "rss", "generic_sites"],
-            help="Passed to scrape_raw_news. Default: dawn dunya rss generic_sites.",
+            default=["dawn", "dunya", "rss", "generic_sites", "currents", "newsdata", "gnews"],
+            help="Passed to scrape_raw_news. Default includes API sources (currents, newsdata, gnews).",
         )
         parser.add_argument(
             "--scrape-limit",

@@ -231,7 +231,35 @@ def merge_catalog_connections() -> int:
         added += 1
     if added:
         _persist_connections(merged)
+    refresh_connection_labels_from_catalog()
     return added
+
+
+def refresh_connection_labels_from_catalog() -> int:
+    """Update RSS/API connection display names from catalog (fixes generic 'Feeds' labels)."""
+    from news.scrape_sources import connection_display_name, default_connections_from_catalog
+
+    catalog_by_url = {
+        (r.get("url") or "").strip(): r
+        for r in default_connections_from_catalog()
+        if (r.get("url") or "").strip()
+    }
+    connections = list_connections()
+    updated = 0
+    for conn in connections:
+        url = (conn.get("url") or "").strip()
+        if not url:
+            continue
+        new_name = connection_display_name(conn)
+        catalog_row = catalog_by_url.get(url)
+        if catalog_row and catalog_row.get("name"):
+            new_name = str(catalog_row["name"]).strip() or new_name
+        if new_name and conn.get("name") != new_name:
+            conn["name"] = new_name
+            updated += 1
+    if updated:
+        _persist_connections(connections)
+    return updated
 
 
 def list_categories(*, raw: list | None = None, seed: bool = True) -> list[dict[str, Any]]:

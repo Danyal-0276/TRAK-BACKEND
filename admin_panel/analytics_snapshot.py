@@ -7,6 +7,7 @@ from typing import Any
 
 from news import platform_taxonomy
 from news.mongo_db import processed_collection, raw_collection
+from news.scrape_sources import connection_display_name, ingest_sources_summary
 
 _CRED_LABELS = {"0": "Real", "1": "Fake", "2": "Suspicious", "none": "Unset"}
 
@@ -112,27 +113,33 @@ def _count_processed_stale(raw_col, proc_col) -> int:
 
 
 def _connections_summary() -> dict[str, Any]:
+    platform_taxonomy.refresh_connection_labels_from_catalog()
     connections = platform_taxonomy.list_connections()
     active = [c for c in connections if c.get("active", True)]
+    ingest = ingest_sources_summary()
     return {
         "total": len(connections),
         "active": len(active),
         "sources": [
             {
                 "slug": c.get("slug") or c.get("id"),
-                "name": c.get("name") or c.get("slug"),
+                "name": connection_display_name(c),
                 "kind": c.get("kind") or "unknown",
                 "active": bool(c.get("active", True)),
                 "source_key": c.get("source_key") or c.get("slug"),
+                "url": (c.get("url") or "").strip(),
             }
-            for c in connections[:20]
+            for c in connections
         ],
+        "sources_truncated": False,
+        "ingest": ingest,
     }
 
 
 def build_admin_analytics_snapshot() -> dict[str, Any]:
     platform_taxonomy.seed_taxonomy_if_empty()
     platform_taxonomy.seed_connections_if_empty()
+    platform_taxonomy.merge_catalog_connections()
     raw_col = raw_collection()
     proc_col = processed_collection()
 

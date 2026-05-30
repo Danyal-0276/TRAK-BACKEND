@@ -44,6 +44,13 @@ services:
         value: https://trak-fyp.netlify.app/login
       - key: PIPELINE_WORKERS
         value: "3"
+      # News API keys — set as Render **Secrets** (Environment → Add Secret):
+      #   CURRENTS_API_KEY, NEWSDATA_API_KEY, GNEWS_API_KEY
+      # Pakistan region (optional tuning):
+      #   CURRENTS_API_COUNTRY=PK
+      #   NEWSDATA_API_COUNTRY=pk
+      #   GNEWS_API_COUNTRY=pk
+      # RSS feeds need no keys (configured in sources_catalog.py).
       # Set in dashboard (secrets): DJANGO_SECRET_KEY, MONGODB_URI, FIREBASE_CREDENTIALS_JSON
 
   # Optional: separate cron service (do not run pipeline on the web service).
@@ -54,7 +61,7 @@ services:
   #   buildCommand: pip install -r requirements.txt && python -m spacy download en_core_web_sm
   #   startCommand: >
   #     python manage.py run_news_cycle
-  #     --sources dawn dunya rss generic_sites
+  #     --sources dawn dunya rss generic_sites currents newsdata gnews
   #     --scrape-limit 35 --pipeline-all --workers 3 --requeue-stale
   #   envVars:
   #     - fromService: { type: web, name: TRAK-BACKEND, envVarKey: MONGODB_URI }

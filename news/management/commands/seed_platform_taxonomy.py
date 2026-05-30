@@ -26,5 +26,8 @@ class Command(BaseCommand):
         if options.get("sync_connections"):
             added = platform_taxonomy.merge_catalog_connections()
             self.stdout.write(self.style.SUCCESS(f"Synced {added} connection(s) from catalog."))
+        renamed = platform_taxonomy.refresh_connection_labels_from_catalog()
+        if renamed:
+            self.stdout.write(self.style.SUCCESS(f"Refreshed {renamed} connection label(s)."))
         conns = platform_taxonomy.list_connections()
         self.stdout.write(f"Connections: {len(conns)} total.")
