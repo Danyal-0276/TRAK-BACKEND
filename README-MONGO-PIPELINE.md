@@ -37,12 +37,34 @@ Same database name as `MONGODB_RAW_DATABASE` (default `TRAK_DB`).
 - Shared DB helpers: `news/mongo_db.py`
 - Raw insert helpers: `news/scrapers/storage.py`
 
+## Dashboard counts vs queue
+
+| Metric | Meaning |
+|--------|---------|
+| `raw_total` | All rows in `raw_articles` (pending, processing, done, failed) |
+| `processed_total` | All rows in `processed_articles` (feed source) |
+| `pipeline_summary.queued` | **Backlog** — raw `pending` + `processing` |
+| `pipeline_summary.processed_stale` | Raw `pending`/`failed` that still have an old processed row |
+
+`raw_total` and `processed_total` are often **equal** after every article was processed at least once. Re-queueing raw to `pending` does **not** delete `processed_articles`; run the pipeline to refresh AI fields in place.
+
 ## Commands
 
 ```bash
 python manage.py ensure_mongo_indexes
+
+# Serial (default)
 python manage.py run_ai_pipeline --limit 50
+
+# Parallel workers (cron / VPS — not Admin HTTP)
+python manage.py run_ai_pipeline --all --batch-size 50 --workers 3
+python manage.py run_ai_pipeline --requeue-stale   # stuck processing → pending
+
+# Scrape + pipeline (scheduled 1–3x/day)
+python manage.py run_news_cycle --scrape-limit 35 --pipeline-all --workers 3 --requeue-stale
 ```
+
+**Hosting:** API runs under Daphne only. Run heavy pipeline via CLI — see `deploy/vps-systemd.md` (VPS timer) or Render Cron (same command, separate service).
 
 Optional **`metadata.json`** next to the saved model (same folder as `CREDIBILITY_MODEL_PATH`):
 

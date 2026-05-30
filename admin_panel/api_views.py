@@ -208,7 +208,7 @@ class AdminPipelineRunView(APIView):
             limit = min(500, max(1, int(request.data.get("limit", 10))))
         except (TypeError, ValueError):
             limit = 10
-        result = orchestrator.run_batch(limit=limit)
+        result = orchestrator.run_batch(limit=limit, workers=1)
         try:
             from notifications.admin_alerts import notify_admin_pipeline_batch
 

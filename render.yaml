@@ -42,4 +42,21 @@ services:
         value: https://trak-fyp.netlify.app/reset-password
       - key: SOCIAL_AUTH_FRONTEND_URL
         value: https://trak-fyp.netlify.app/login
+      - key: PIPELINE_WORKERS
+        value: "3"
       # Set in dashboard (secrets): DJANGO_SECRET_KEY, MONGODB_URI, FIREBASE_CREDENTIALS_JSON
+
+  # Optional: separate cron service (do not run pipeline on the web service).
+  # - type: cron
+  #   name: TRAK-PIPELINE
+  #   schedule: "0 6,14,22 * * *"
+  #   runtime: python
+  #   buildCommand: pip install -r requirements.txt && python -m spacy download en_core_web_sm
+  #   startCommand: >
+  #     python manage.py run_news_cycle
+  #     --sources dawn dunya rss generic_sites
+  #     --scrape-limit 35 --pipeline-all --workers 3 --requeue-stale
+  #   envVars:
+  #     - fromService: { type: web, name: TRAK-BACKEND, envVarKey: MONGODB_URI }
+  #     - key: PIPELINE_WORKERS
+  #       value: "3"

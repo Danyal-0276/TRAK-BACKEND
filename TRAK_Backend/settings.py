@@ -464,6 +464,16 @@ FACT_CHECKER_MAX_AGE_DAYS = int(os.environ.get("FACT_CHECKER_MAX_AGE_DAYS", "30"
 FACT_CHECKER_PAGE_SIZE = int(os.environ.get("FACT_CHECKER_PAGE_SIZE", "5"))
 FACT_CHECKER_LANGUAGE = os.environ.get("FACT_CHECKER_LANGUAGE", "en-US").strip()
 FACT_CHECKER_TIMEOUT = float(os.environ.get("FACT_CHECKER_TIMEOUT", "15"))
+FACT_CHECKER_PARALLEL = os.environ.get("FACT_CHECKER_PARALLEL", "true").strip().lower() in (
+    "1",
+    "true",
+    "yes",
+    "on",
+)
+
+# AI pipeline parallelism (CLI / cron / systemd — not Admin HTTP)
+PIPELINE_WORKERS = max(1, min(8, int(os.environ.get("PIPELINE_WORKERS", "1"))))
+PIPELINE_STALE_MINUTES = max(5, int(os.environ.get("PIPELINE_STALE_MINUTES", "30")))
 
 # BART news summarizer (HF Space preferred; Hub id is fallback when SUMMARIZER_SPACE_ID unset)
 SUMMARIZER_MODEL_ID = os.environ.get("SUMMARIZER_MODEL_ID", "daniB2112/bart-news-summarizer").strip()
