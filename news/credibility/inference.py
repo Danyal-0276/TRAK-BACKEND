@@ -126,7 +126,11 @@ def _predict_fake_detection_space(text: str) -> Optional[dict[str, Any]]:
     if not space_id:
         return None
     try:
-        raw = space_predict(space_id, text[:8000], api_name=_fake_detection_api_name())
+        raw = space_predict(
+            space_id,
+            text=text[:8000],
+            api_name=_fake_detection_api_name(),
+        )
     except Exception as exc:
         logger.exception("Fake detection Space failed (%s): %s", space_id, exc)
         return None

@@ -23,8 +23,12 @@ services:
         value: TRAK_DB
       - key: SUMMARIZER_SPACE_ID
         value: daniB2112/bart-news-summarizer
+      - key: SUMMARIZER_SPACE_API_NAME
+        value: /summarize
       - key: FAKE_DETECTION_SPACE_ID
         value: abd8433/fake-news-detection
+      - key: FAKE_DETECTION_SPACE_API_NAME
+        value: /detect
       - key: SUMMARIZER_MODEL_ID
         value: daniB2112/bart-news-summarizer
       - key: SUMMARIZER_ENABLED

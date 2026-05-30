@@ -443,9 +443,13 @@ CREDIBILITY_CONFIDENCE_THRESHOLD = float(os.environ.get("CREDIBILITY_CONFIDENCE_
 # Hugging Face Spaces + token (private Spaces)
 HF_TOKEN = os.environ.get("HF_TOKEN", "").strip() or None
 FAKE_DETECTION_SPACE_ID = os.environ.get("FAKE_DETECTION_SPACE_ID", "").strip() or None
-FAKE_DETECTION_SPACE_API_NAME = os.environ.get("FAKE_DETECTION_SPACE_API_NAME", "").strip() or None
+FAKE_DETECTION_SPACE_API_NAME = (
+    os.environ.get("FAKE_DETECTION_SPACE_API_NAME", "/detect").strip() or "/detect"
+)
 SUMMARIZER_SPACE_ID = os.environ.get("SUMMARIZER_SPACE_ID", "").strip() or None
-SUMMARIZER_SPACE_API_NAME = os.environ.get("SUMMARIZER_SPACE_API_NAME", "").strip() or None
+SUMMARIZER_SPACE_API_NAME = (
+    os.environ.get("SUMMARIZER_SPACE_API_NAME", "/summarize").strip() or "/summarize"
+)
 
 # Fact checker — multi-provider second pass after fake-detection Space
 FACT_CHECKER_ENABLED = os.environ.get("FACT_CHECKER_ENABLED", "true").strip()

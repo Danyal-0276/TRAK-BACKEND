@@ -66,7 +66,14 @@ def _summarize_via_space(text: str) -> Optional[dict[str, Any]]:
     if not space_id:
         return None
     try:
-        raw = space_predict(space_id, text, api_name=_summarizer_space_api_name())
+        max_new = int(getattr(settings, "SUMMARIZER_MAX_NEW_TOKENS", 128))
+        raw = space_predict(
+            space_id,
+            text=text,
+            max_length=max_new,
+            min_length=min(40, max(10, max_new // 3)),
+            api_name=_summarizer_space_api_name(),
+        )
         summary = parse_summary_response(raw)
         if not summary:
             return None
