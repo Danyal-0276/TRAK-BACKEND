@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import threading
 from typing import Any, Optional
 
 from django.conf import settings
@@ -17,6 +18,7 @@ from django.conf import settings
 logger = logging.getLogger(__name__)
 
 _clients: dict[str, Any] = {}
+_client_lock = threading.RLock()
 
 
 def _hf_token() -> Optional[str]:
@@ -30,13 +32,14 @@ def _get_client(space_id: str):
     space_id = (space_id or "").strip()
     if not space_id:
         raise ValueError("space_id is required")
-    if space_id not in _clients:
-        kwargs: dict[str, Any] = {}
-        token = _hf_token()
-        if token:
-            kwargs["hf_token"] = token
-        _clients[space_id] = Client(space_id, **kwargs)
-    return _clients[space_id]
+    with _client_lock:
+        if space_id not in _clients:
+            kwargs: dict[str, Any] = {}
+            token = _hf_token()
+            if token:
+                kwargs["hf_token"] = token
+            _clients[space_id] = Client(space_id, **kwargs)
+        return _clients[space_id]
 
 
 def preload_space(space_id: str) -> dict[str, Any]:
@@ -59,11 +62,12 @@ def space_predict(
     **kwargs: Any,
 ) -> Any:
     """Run Space predict. Pass positional args matching the Gradio input order."""
-    client = _get_client(space_id.strip())
-    predict_kwargs: dict[str, Any] = dict(kwargs)
-    if api_name:
-        predict_kwargs["api_name"] = api_name
-    return client.predict(*args, **predict_kwargs)
+    with _client_lock:
+        client = _get_client(space_id.strip())
+        predict_kwargs: dict[str, Any] = dict(kwargs)
+        if api_name:
+            predict_kwargs["api_name"] = api_name
+        return client.predict(*args, **predict_kwargs)
 
 
 def parse_summary_response(raw: Any) -> str:

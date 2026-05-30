@@ -6,13 +6,14 @@ Raw rows must be ``pipeline_status=pending``; scrapers set that on insert.
 Examples::
 
     python manage.py run_news_cycle
-    python manage.py run_news_cycle --sources dawn dunya rss generic_sites --scrape-limit 45 --pipeline-limit 200
-    python manage.py run_news_cycle --skip-scrape --pipeline-limit 100
+    python manage.py run_news_cycle --sources dawn dunya rss generic_sites --scrape-limit 45 --pipeline-all --workers 3
+    python manage.py run_news_cycle --skip-scrape --pipeline-limit 100 --workers 3
     python manage.py run_news_cycle --skip-pipeline --sources rss --scrape-limit 15
 
-Schedule this command every N minutes via cron, Windows Task Scheduler, or systemd timer.
+Schedule via Render Cron, Windows Task Scheduler, or VPS systemd timer (see deploy/vps-systemd.md).
 """
 
+from django.conf import settings
 from django.core.management import call_command
 from django.core.management.base import BaseCommand
 
@@ -24,8 +25,8 @@ class Command(BaseCommand):
         parser.add_argument(
             "--sources",
             nargs="+",
-            default=["dawn", "dunya", "rss", "generic_sites"],
-            help="Passed to scrape_raw_news. Default: dawn dunya rss generic_sites.",
+            default=["dawn", "dunya", "rss", "generic_sites", "currents", "newsdata", "gnews"],
+            help="Passed to scrape_raw_news. Default includes API sources (currents, newsdata, gnews).",
         )
         parser.add_argument(
             "--scrape-limit",
@@ -37,7 +38,29 @@ class Command(BaseCommand):
             "--pipeline-limit",
             type=int,
             default=200,
-            help="Max pending raw docs for run_ai_pipeline (default 200).",
+            help="Max pending raw docs for run_ai_pipeline when not using --pipeline-all (default 200).",
+        )
+        parser.add_argument(
+            "--pipeline-all",
+            action="store_true",
+            help="Drain entire pending queue (passes --all to run_ai_pipeline).",
+        )
+        parser.add_argument(
+            "--pipeline-batch-size",
+            type=int,
+            default=50,
+            help="Batch size when using --pipeline-all (default 50).",
+        )
+        parser.add_argument(
+            "--workers",
+            type=int,
+            default=None,
+            help="Parallel pipeline workers (default: PIPELINE_WORKERS env or 1).",
+        )
+        parser.add_argument(
+            "--requeue-stale",
+            action="store_true",
+            help="Reset stuck processing rows before pipeline (forwarded to run_ai_pipeline).",
         )
         parser.add_argument(
             "--skip-scrape",
@@ -68,9 +91,20 @@ class Command(BaseCommand):
 
         if not options["skip_pipeline"]:
             self.stdout.write(self.style.NOTICE("=== AI pipeline -> processed_articles ==="))
-            opts = {"limit": options["pipeline_limit"]}
+            opts: dict = {}
+            if options["pipeline_all"]:
+                opts["all"] = True
+                opts["batch_size"] = max(1, options["pipeline_batch_size"])
+            else:
+                opts["limit"] = options["pipeline_limit"]
             if options["no_preload_model"]:
                 opts["no_preload_model"] = True
+            if options["requeue_stale"]:
+                opts["requeue_stale"] = True
+            workers = options["workers"]
+            if workers is None:
+                workers = getattr(settings, "PIPELINE_WORKERS", 1)
+            opts["workers"] = workers
             call_command("run_ai_pipeline", **opts)
         else:
             self.stdout.write(self.style.WARNING("Skipping pipeline."))

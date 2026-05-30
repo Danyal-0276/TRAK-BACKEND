@@ -26,7 +26,7 @@ class Command(BaseCommand):
             nargs="+",
             choices=list(SOURCE_MODULES.keys()),
             default=["dawn", "dunya"],
-            help="dawn | dunya | rss | generic_sites (see news/scrapers/sources_catalog.py).",
+            help="dawn | dunya | rss | generic_sites | currents | newsdata | gnews.",
         )
         parser.add_argument(
             "--limit",

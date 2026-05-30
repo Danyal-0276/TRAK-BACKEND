@@ -7,8 +7,12 @@ from __future__ import annotations
 
 import re
 import string
-from datetime import datetime, timezone
-from typing import Any
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime, timedelta, timezone
+from typing import Any, Optional
+
+from pymongo import ReturnDocument
 
 from news.credibility.inference import predict_credibility
 from news.mongo_db import processed_collection, raw_collection
@@ -16,6 +20,9 @@ from news.notifications.keyword_alerts import notify_keyword_matches_for_article
 from news.pipeline.keywords import extract_topic_keywords
 from news.pipeline.ner import extract_entities, ner_model_id
 from news.summarization.inference import summarize_text
+
+# Shared counters for parallel run_batch (reset per batch).
+_batch_lock = threading.Lock()
 
 
 def clean_text(text: str) -> str:
@@ -115,6 +122,43 @@ def process_one_raw(doc: dict) -> dict[str, Any]:
     return {"ok": True, "canonical_url": canonical}
 
 
+def claim_next_pending() -> Optional[dict[str, Any]]:
+    """Atomically claim one pending raw article for processing."""
+    col = raw_collection()
+    now = datetime.now(timezone.utc)
+    return col.find_one_and_update(
+        {"pipeline_status": "pending"},
+        {
+            "$set": {
+                "pipeline_status": "processing",
+                "processing_started_at": now,
+            }
+        },
+        sort=[("fetched_at", 1)],
+        return_document=ReturnDocument.AFTER,
+    )
+
+
+def requeue_stale_processing(*, stale_minutes: int = 30) -> int:
+    """Reset raw articles stuck in processing (e.g. crashed worker) back to pending."""
+    col = raw_collection()
+    cutoff = datetime.now(timezone.utc) - timedelta(minutes=max(1, stale_minutes))
+    result = col.update_many(
+        {
+            "pipeline_status": "processing",
+            "$or": [
+                {"processing_started_at": {"$lt": cutoff}},
+                {"processing_started_at": {"$exists": False}},
+            ],
+        },
+        {
+            "$set": {"pipeline_status": "pending"},
+            "$unset": {"processing_started_at": ""},
+        },
+    )
+    return int(result.modified_count)
+
+
 def mark_raw_for_reprocess(*, include_failed: bool = True) -> int:
     """
     Queue existing raw_articles for another pipeline pass (same processed_articles upsert).
@@ -131,38 +175,98 @@ def mark_raw_for_reprocess(*, include_failed: bool = True) -> int:
     return int(result.modified_count)
 
 
-def run_batch(limit: int = 10) -> dict[str, Any]:
+def _process_claimed_raw(doc: dict) -> dict[str, Any]:
+    """Process one claimed document; mark failed on error."""
     col = raw_collection()
-    pending = list(
-        col.find({"pipeline_status": "pending"}).sort("fetched_at", 1).limit(limit)
-    )
-    ok, errors = 0, 0
-    details: list[dict] = []
-    for doc in pending:
+    try:
+        return process_one_raw(doc)
+    except Exception as e:
+        err_msg = str(e)[:500]
+        col.update_one(
+            {"_id": doc["_id"]},
+            {"$set": {"pipeline_status": "failed", "pipeline_error": err_msg}},
+        )
         try:
-            col.update_one({"_id": doc["_id"]}, {"$set": {"pipeline_status": "processing"}})
-            r = process_one_raw(doc)
-            ok += 1
-            details.append(r)
-        except Exception as e:
-            errors += 1
-            err_msg = str(e)[:500]
+            from notifications.admin_alerts import notify_admin_pipeline_error
+
+            notify_admin_pipeline_error(
+                error=err_msg,
+                canonical_url=str(doc.get("canonical_url") or ""),
+                context="run_batch",
+            )
+        except Exception:
+            pass
+        return {"ok": False, "error": str(e), "canonical_url": doc.get("canonical_url")}
+
+
+def _worker_loop(
+    *,
+    max_articles: int,
+    shared: dict[str, Any],
+) -> None:
+    """Claim and process articles until limit reached or queue empty."""
+    while True:
+        with _batch_lock:
+            if shared["processed"] + shared["errors"] >= max_articles:
+                return
+        doc = claim_next_pending()
+        if doc is None:
+            return
+        detail = _process_claimed_raw(doc)
+        with _batch_lock:
+            shared["details"].append(detail)
+            if detail.get("ok"):
+                shared["processed"] += 1
+            else:
+                shared["errors"] += 1
+
+
+def run_batch(limit: int = 10, *, workers: int = 1) -> dict[str, Any]:
+    workers = max(1, min(8, int(workers)))
+    limit = max(1, int(limit))
+
+    if workers == 1:
+        col = raw_collection()
+        pending = list(
+            col.find({"pipeline_status": "pending"}).sort("fetched_at", 1).limit(limit)
+        )
+        ok, errors = 0, 0
+        details: list[dict] = []
+        for doc in pending:
             col.update_one(
                 {"_id": doc["_id"]},
-                {"$set": {"pipeline_status": "failed", "pipeline_error": err_msg}},
+                {
+                    "$set": {
+                        "pipeline_status": "processing",
+                        "processing_started_at": datetime.now(timezone.utc),
+                    }
+                },
             )
-            details.append({"ok": False, "error": str(e), "canonical_url": doc.get("canonical_url")})
-            try:
-                from notifications.admin_alerts import notify_admin_pipeline_error
+            detail = _process_claimed_raw(doc)
+            details.append(detail)
+            if detail.get("ok"):
+                ok += 1
+            else:
+                errors += 1
+    else:
+        shared: dict[str, Any] = {"processed": 0, "errors": 0, "details": []}
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            futures = [
+                pool.submit(_worker_loop, max_articles=limit, shared=shared)
+                for _ in range(workers)
+            ]
+            for fut in as_completed(futures):
+                fut.result()
+        ok = shared["processed"]
+        errors = shared["errors"]
+        details = shared["details"]
 
-                notify_admin_pipeline_error(
-                    error=err_msg,
-                    canonical_url=str(doc.get("canonical_url") or ""),
-                    context="run_batch",
-                )
-            except Exception:
-                pass
-    result = {"processed_ok": ok, "errors": errors, "details": details}
+    result = {
+        "processed_ok": ok,
+        "errors": errors,
+        "details": details,
+        "workers": workers,
+    }
     try:
         from notifications.admin_alerts import notify_admin_pipeline_batch
 
@@ -172,7 +276,12 @@ def run_batch(limit: int = 10) -> dict[str, Any]:
     return result
 
 
-def run_until_empty(*, batch_size: int = 50, max_articles: int = 0) -> dict[str, Any]:
+def run_until_empty(
+    *,
+    batch_size: int = 50,
+    max_articles: int = 0,
+    workers: int = 1,
+) -> dict[str, Any]:
     """Process all pending raw_articles in batches (upsert into processed_articles only)."""
     total_ok = 0
     total_errors = 0
@@ -183,7 +292,7 @@ def run_until_empty(*, batch_size: int = 50, max_articles: int = 0) -> dict[str,
         limit = batch_size
         if max_articles:
             limit = min(batch_size, max_articles - total_ok - total_errors)
-        result = run_batch(limit=limit)
+        result = run_batch(limit=limit, workers=workers)
         batches += 1
         total_ok += result["processed_ok"]
         total_errors += result["errors"]
@@ -195,4 +304,5 @@ def run_until_empty(*, batch_size: int = 50, max_articles: int = 0) -> dict[str,
         "errors": total_errors,
         "batches": batches,
         "pending_remaining": pending_left,
+        "workers": workers,
     }

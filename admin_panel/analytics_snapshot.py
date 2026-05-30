@@ -7,8 +7,16 @@ from typing import Any
 
 from news import platform_taxonomy
 from news.mongo_db import processed_collection, raw_collection
+from news.scrape_sources import connection_display_name, ingest_sources_summary
 
 _CRED_LABELS = {"0": "Real", "1": "Fake", "2": "Suspicious", "none": "Unset"}
+
+# Admin UI: whole-collection counts vs queue backlog.
+COLLECTION_LABELS = {
+    "raw_total": "Scraped articles (all pipeline states)",
+    "processed_total": "AI output rows (may include stale until re-run)",
+    "queued": "Raw articles pending or processing — use this for backlog",
+}
 
 
 def _group_counts(col, field: str, *, limit: int = 15) -> dict[str, int]:
@@ -78,28 +86,60 @@ def _pipeline_summary(pipeline_counts: dict[str, int], raw_total: int) -> dict[s
     }
 
 
+def _count_processed_stale(raw_col, proc_col) -> int:
+    """Raw pending/failed that still have a processed_articles row (stale AI output)."""
+    proc_name = proc_col.name
+    try:
+        cursor = raw_col.aggregate(
+            [
+                {"$match": {"pipeline_status": {"$in": ["pending", "failed"]}}},
+                {"$project": {"canonical_url": 1}},
+                {
+                    "$lookup": {
+                        "from": proc_name,
+                        "localField": "canonical_url",
+                        "foreignField": "canonical_url",
+                        "as": "proc",
+                    }
+                },
+                {"$match": {"proc.0": {"$exists": True}}},
+                {"$count": "n"},
+            ]
+        )
+        doc = next(cursor, None)
+        return int(doc["n"]) if doc else 0
+    except Exception:
+        return 0
+
+
 def _connections_summary() -> dict[str, Any]:
+    platform_taxonomy.refresh_connection_labels_from_catalog()
     connections = platform_taxonomy.list_connections()
     active = [c for c in connections if c.get("active", True)]
+    ingest = ingest_sources_summary()
     return {
         "total": len(connections),
         "active": len(active),
         "sources": [
             {
                 "slug": c.get("slug") or c.get("id"),
-                "name": c.get("name") or c.get("slug"),
+                "name": connection_display_name(c),
                 "kind": c.get("kind") or "unknown",
                 "active": bool(c.get("active", True)),
                 "source_key": c.get("source_key") or c.get("slug"),
+                "url": (c.get("url") or "").strip(),
             }
-            for c in connections[:20]
+            for c in connections
         ],
+        "sources_truncated": False,
+        "ingest": ingest,
     }
 
 
 def build_admin_analytics_snapshot() -> dict[str, Any]:
     platform_taxonomy.seed_taxonomy_if_empty()
     platform_taxonomy.seed_connections_if_empty()
+    platform_taxonomy.merge_catalog_connections()
     raw_col = raw_collection()
     proc_col = processed_collection()
 
@@ -162,11 +202,14 @@ def build_admin_analytics_snapshot() -> dict[str, Any]:
         pass
 
     pipeline_summary = _pipeline_summary(pipeline_counts, raw_total)
+    pipeline_summary["processed_stale"] = _count_processed_stale(raw_col, proc_col)
+    pipeline_summary["needs_pipeline"] = pipeline_summary["pending"] + pipeline_summary["failed"]
     connections = _connections_summary()
 
     return {
         "raw_total": raw_total,
         "processed_total": processed_total,
+        "collection_labels": COLLECTION_LABELS,
         "raw_by_pipeline_status": pipeline_counts,
         "processed_by_credibility_label": cred_by_label,
         "processed_by_credibility_label_named": {

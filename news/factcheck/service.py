@@ -470,13 +470,35 @@ def verify_claim(
         result["fact_check_verdict"] = "empty_query"
         return result
 
-    results: list[dict[str, Any]] = []
+    tasks: list[tuple[str, str, VerifyFn]] = []
     for name in _providers_list():
         fn = _PROVIDER_REGISTRY.get(name)
         if not fn:
             logger.warning("Unknown fact-check provider: %s", name)
             continue
         query = short_query if name in ("wikidata", "openalex") else full_query
-        results.append(fn(query, ml_label))
+        tasks.append((name, query, fn))
+
+    results: list[dict[str, Any]] = []
+    parallel = getattr(settings, "FACT_CHECKER_PARALLEL", True) and len(tasks) > 1
+    if parallel:
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+
+        with ThreadPoolExecutor(max_workers=min(4, len(tasks))) as pool:
+            futures = {
+                pool.submit(fn, query, ml_label): name for name, query, fn in tasks
+            }
+            for fut in as_completed(futures):
+                name = futures[fut]
+                try:
+                    results.append(fut.result())
+                except Exception as exc:
+                    logger.exception("Fact-check provider %s failed: %s", name, exc)
+                    err = _empty_result(name)
+                    err["fact_check_verdict"] = "api_error"
+                    results.append(err)
+    else:
+        for name, query, fn in tasks:
+            results.append(fn(query, ml_label))
 
     return _aggregate_results(results, ml_label)

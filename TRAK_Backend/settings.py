@@ -443,9 +443,13 @@ CREDIBILITY_CONFIDENCE_THRESHOLD = float(os.environ.get("CREDIBILITY_CONFIDENCE_
 # Hugging Face Spaces + token (private Spaces)
 HF_TOKEN = os.environ.get("HF_TOKEN", "").strip() or None
 FAKE_DETECTION_SPACE_ID = os.environ.get("FAKE_DETECTION_SPACE_ID", "").strip() or None
-FAKE_DETECTION_SPACE_API_NAME = os.environ.get("FAKE_DETECTION_SPACE_API_NAME", "").strip() or None
+FAKE_DETECTION_SPACE_API_NAME = (
+    os.environ.get("FAKE_DETECTION_SPACE_API_NAME", "/detect").strip() or "/detect"
+)
 SUMMARIZER_SPACE_ID = os.environ.get("SUMMARIZER_SPACE_ID", "").strip() or None
-SUMMARIZER_SPACE_API_NAME = os.environ.get("SUMMARIZER_SPACE_API_NAME", "").strip() or None
+SUMMARIZER_SPACE_API_NAME = (
+    os.environ.get("SUMMARIZER_SPACE_API_NAME", "/summarize").strip() or "/summarize"
+)
 
 # Fact checker — multi-provider second pass after fake-detection Space
 FACT_CHECKER_ENABLED = os.environ.get("FACT_CHECKER_ENABLED", "true").strip()
@@ -460,6 +464,16 @@ FACT_CHECKER_MAX_AGE_DAYS = int(os.environ.get("FACT_CHECKER_MAX_AGE_DAYS", "30"
 FACT_CHECKER_PAGE_SIZE = int(os.environ.get("FACT_CHECKER_PAGE_SIZE", "5"))
 FACT_CHECKER_LANGUAGE = os.environ.get("FACT_CHECKER_LANGUAGE", "en-US").strip()
 FACT_CHECKER_TIMEOUT = float(os.environ.get("FACT_CHECKER_TIMEOUT", "15"))
+FACT_CHECKER_PARALLEL = os.environ.get("FACT_CHECKER_PARALLEL", "true").strip().lower() in (
+    "1",
+    "true",
+    "yes",
+    "on",
+)
+
+# AI pipeline parallelism (CLI / cron / systemd — not Admin HTTP)
+PIPELINE_WORKERS = max(1, min(8, int(os.environ.get("PIPELINE_WORKERS", "1"))))
+PIPELINE_STALE_MINUTES = max(5, int(os.environ.get("PIPELINE_STALE_MINUTES", "30")))
 
 # BART news summarizer (HF Space preferred; Hub id is fallback when SUMMARIZER_SPACE_ID unset)
 SUMMARIZER_MODEL_ID = os.environ.get("SUMMARIZER_MODEL_ID", "daniB2112/bart-news-summarizer").strip()
@@ -484,6 +498,51 @@ SCRAPER_STORE_RAW_HTML = os.environ.get("SCRAPER_STORE_RAW_HTML", "false").lower
     "true",
     "yes",
 )
+
+# Currents API — https://currentsapi.services (free tier ~1000 requests/day).
+# One /latest-news call per scrape run (~30 articles). Optional category searches cost +1 req each.
+CURRENTS_API_KEY = os.environ.get("CURRENTS_API_KEY", "").strip()
+CURRENTS_API_LANGUAGE = os.environ.get("CURRENTS_API_LANGUAGE", "en").strip() or "en"
+CURRENTS_API_COUNTRY = os.environ.get("CURRENTS_API_COUNTRY", "").strip()
+CURRENTS_API_SEARCH_CATEGORIES = [
+    c.strip()
+    for c in os.environ.get("CURRENTS_API_SEARCH_CATEGORIES", "").split(",")
+    if c.strip()
+]
+CURRENTS_API_MAX_REQUESTS_PER_RUN = int(os.environ.get("CURRENTS_API_MAX_REQUESTS_PER_RUN", "5"))
+CURRENTS_API_FETCH_ARTICLE_PAGES = os.environ.get(
+    "CURRENTS_API_FETCH_ARTICLE_PAGES", "false"
+).lower() in ("1", "true", "yes")
+
+# NewsData.io — https://newsdata.io (free tier: 10 articles/request, daily API credits).
+NEWSDATA_API_KEY = os.environ.get("NEWSDATA_API_KEY", "").strip()
+NEWSDATA_API_LANGUAGE = os.environ.get("NEWSDATA_API_LANGUAGE", "en").strip() or "en"
+NEWSDATA_API_COUNTRY = os.environ.get("NEWSDATA_API_COUNTRY", "").strip()
+NEWSDATA_API_SIZE = int(os.environ.get("NEWSDATA_API_SIZE", "10"))
+NEWSDATA_API_CATEGORIES = [
+    c.strip()
+    for c in os.environ.get("NEWSDATA_API_CATEGORIES", "").split(",")
+    if c.strip()
+]
+NEWSDATA_API_MAX_REQUESTS_PER_RUN = int(os.environ.get("NEWSDATA_API_MAX_REQUESTS_PER_RUN", "3"))
+NEWSDATA_API_FETCH_ARTICLE_PAGES = os.environ.get(
+    "NEWSDATA_API_FETCH_ARTICLE_PAGES", "false"
+).lower() in ("1", "true", "yes")
+
+# GNews — https://gnews.io (free tier: 10 articles/request, daily request limit).
+GNEWS_API_KEY = os.environ.get("GNEWS_API_KEY", "").strip()
+GNEWS_API_LANGUAGE = os.environ.get("GNEWS_API_LANGUAGE", "en").strip() or "en"
+GNEWS_API_COUNTRY = os.environ.get("GNEWS_API_COUNTRY", "").strip()
+GNEWS_API_MAX = int(os.environ.get("GNEWS_API_MAX", "10"))
+GNEWS_API_CATEGORIES = [
+    c.strip().lower()
+    for c in os.environ.get("GNEWS_API_CATEGORIES", "").split(",")
+    if c.strip()
+]
+GNEWS_API_MAX_REQUESTS_PER_RUN = int(os.environ.get("GNEWS_API_MAX_REQUESTS_PER_RUN", "4"))
+GNEWS_API_FETCH_ARTICLE_PAGES = os.environ.get(
+    "GNEWS_API_FETCH_ARTICLE_PAGES", "false"
+).lower() in ("1", "true", "yes")
 
 # RSS feeds: merged with `news/scrapers/sources_catalog.py` → RSS_FEED_URLS (add feeds there first).
 SCRAPER_RSS_FEED_URLS = [
