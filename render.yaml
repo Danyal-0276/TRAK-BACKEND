@@ -14,9 +14,9 @@ services:
       - key: DJANGO_ALLOWED_HOSTS
         value: trak-backend-upip.onrender.com,.onrender.com
       - key: CORS_ALLOWED_ORIGINS
-        value: https://trak-fyp.netlify.app,http://localhost:3000,http://localhost:5173,http://127.0.0.1:3000,http://127.0.0.1:5173
+        value: https://trak-flax.vercel.app,https://trak-fyp.netlify.app,http://localhost:3000,http://localhost:5173,http://127.0.0.1:3000,http://127.0.0.1:5173
       - key: CSRF_TRUSTED_ORIGINS
-        value: https://trak-backend-upip.onrender.com,https://trak-fyp.netlify.app
+        value: https://trak-backend-upip.onrender.com,https://trak-flax.vercel.app,https://trak-fyp.netlify.app
       - key: MONGODB_DJANGO_DATABASE
         value: trak_django
       - key: MONGODB_RAW_DATABASE
@@ -39,9 +39,9 @@ services:
         value: wikipedia,wikidata,openalex
       # Optional: FACT_CHECKER_PROVIDER=google + GOOGLE_FACT_CHECK_API_KEY secret
       - key: PASSWORD_RESET_FRONTEND_URL
-        value: https://trak-fyp.netlify.app/reset-password
+        value: https://trak-flax.vercel.app/reset-password
       - key: SOCIAL_AUTH_FRONTEND_URL
-        value: https://trak-fyp.netlify.app/login
+        value: https://trak-flax.vercel.app/login
       - key: PIPELINE_WORKERS
         value: "3"
       # News API keys — set as Render **Secrets** (Environment → Add Secret):
