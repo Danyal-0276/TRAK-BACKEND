@@ -31,5 +31,13 @@ urlpatterns = [
         name="admin-connection-detail",
     ),
     path("notifications/", api_views.AdminNotificationsView.as_view(), name="admin-notifications"),
+    path(
+        "notifications/<str:notification_id>/mark-read/",
+        api_views.AdminNotificationMarkReadView.as_view(),
+        name="admin-notification-mark-read",
+    ),
+    path("feedback/", api_views.AdminFeedbackListView.as_view(), name="admin-feedback-list"),
+    path("feedback/stats/", api_views.AdminFeedbackStatsView.as_view(), name="admin-feedback-stats"),
+    path("feedback/<str:feedback_id>/", api_views.AdminFeedbackDetailView.as_view(), name="admin-feedback-detail"),
 ]
  

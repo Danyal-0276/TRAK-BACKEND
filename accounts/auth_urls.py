@@ -35,6 +35,11 @@ urlpatterns = [
     path("verify/confirm/", views.VerifyContactConfirmView.as_view(), name="auth-verify-confirm"),
     path("follow/", views.FollowView.as_view(), name="auth-follow"),
     path(
+        "password-reset/check-email/",
+        views.PasswordResetCheckEmailView.as_view(),
+        name="auth-password-reset-check-email",
+    ),
+    path(
         "password-reset/",
         views.PasswordResetRequestView.as_view(),
         name="auth-password-reset",

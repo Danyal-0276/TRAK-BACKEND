@@ -19,6 +19,8 @@ from news.mongo_db import (
     reactions_collection,
     user_preferences_collection,
 )
+from news import feedback_service
+from news.feedback_constants import FEEDBACK_CATEGORIES
 
 
 def _parse_bool(value, field_name: str) -> bool:
@@ -156,23 +158,53 @@ class TrackKeywordsView(APIView):
             )
 
 
+class UserFeedbackView(APIView):
+    """POST user feedback / report; GET categories list."""
+
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        return Response(
+            {
+                "categories": [
+                    {"key": k, "label": v} for k, v in FEEDBACK_CATEGORIES.items()
+                ]
+            }
+        )
+
+    def post(self, request):
+        data, err, code = feedback_service.submit_user_feedback(
+            request.user,
+            fb_type=str(request.data.get("type") or ""),
+            article_id=str(request.data.get("article_id") or ""),
+            url=str(request.data.get("url") or ""),
+            category=str(request.data.get("category") or ""),
+            message=str(request.data.get("message") or ""),
+            reason=str(request.data.get("reason") or ""),
+        )
+        if err:
+            return Response({"detail": err}, status=code)
+        return Response(data, status=code)
+
+
 class ArticleReportView(APIView):
+    """Legacy alias for POST /api/user/reports/."""
+
     permission_classes = [permissions.IsAuthenticated]
 
     def post(self, request):
-        article_id = str(request.data.get("article_id") or "").strip()
-        url = str(request.data.get("url") or "").strip()
-        reason = str(request.data.get("reason") or "flag").strip() or "flag"
-        col = article_reports_collection()
-        doc = {
-            "user_id": request.user.pk,
-            "article_id": article_id or None,
-            "url": url or None,
-            "reason": reason[:2000],
-            "created_at": datetime.now(timezone.utc),
-        }
-        col.insert_one(doc)
-        return Response({"detail": "Report submitted."}, status=status.HTTP_201_CREATED)
+        data, err, code = feedback_service.submit_user_feedback(
+            request.user,
+            fb_type="article_report",
+            article_id=str(request.data.get("article_id") or ""),
+            url=str(request.data.get("url") or ""),
+            category=str(request.data.get("category") or ""),
+            message=str(request.data.get("message") or ""),
+            reason=str(request.data.get("reason") or "flag"),
+        )
+        if err:
+            return Response({"detail": err}, status=code)
+        return Response({"detail": "Report submitted.", "feedback": data}, status=code)
 
 
 class ArticleDetailView(APIView):

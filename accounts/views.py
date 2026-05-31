@@ -977,6 +977,22 @@ def _otp_preview_enabled() -> bool:
     return os.environ.get("OTP_DEV_PREVIEW", "").lower() in ("1", "true", "yes")
 
 
+class PasswordResetCheckEmailView(RatelimitedAPIMixin, APIView):
+    """POST { email } — returns whether an account exists (for client UX)."""
+
+    permission_classes = [permissions.AllowAny]
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = "password_reset"
+    ratelimit_rate = "30/m"
+
+    def post(self, request):
+        ser = PasswordResetRequestSerializer(data=request.data)
+        ser.is_valid(raise_exception=True)
+        email = ser.validated_data["email"]
+        exists = User.objects.filter(email__iexact=email).exists()
+        return Response({"exists": exists}, status=status.HTTP_200_OK)
+
+
 class PasswordResetRequestView(RatelimitedAPIMixin, APIView):
     """POST { email } — generic message; sends a 6-digit OTP to email when account exists."""
 

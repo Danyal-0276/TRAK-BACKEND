@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from notifications.delivery import notify_all_admins
+from notifications.delivery import notify_builtin_admins
 
 
 def notify_admin_pipeline_error(*, error: str, canonical_url: str = "", context: str = "") -> int:
@@ -12,7 +12,7 @@ def notify_admin_pipeline_error(*, error: str, canonical_url: str = "", context:
     details = (error or "Unknown error")[:500]
     if context:
         details = f"{context}\n{details}"
-    return notify_all_admins(
+    return notify_builtin_admins(
         ntype="admin_pipeline_error",
         text=text,
         details=details,
@@ -25,7 +25,7 @@ def notify_admin_pipeline_error(*, error: str, canonical_url: str = "", context:
 def notify_admin_pipeline_batch(*, processed_ok: int, errors: int) -> int:
     if errors <= 0:
         return 0
-    return notify_all_admins(
+    return notify_builtin_admins(
         ntype="admin_system",
         text=f"Pipeline batch finished with {errors} error(s) ({processed_ok} ok).",
         details="Open Admin → Articles or logs for details.",

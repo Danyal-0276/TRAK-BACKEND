@@ -6,6 +6,7 @@ import logging
 from datetime import datetime, timezone
 from typing import Any, Optional
 
+from django.conf import settings
 from django.contrib.auth import get_user_model
 
 from news.mongo_db import notifications_collection, user_preferences_collection
@@ -137,6 +138,8 @@ def _default_title(ntype: str) -> str:
         "system": "TRAK",
         "admin_pipeline_error": "Pipeline error",
         "admin_system": "TRAK Admin",
+        "admin_user_report": "User report",
+        "admin_user_feedback": "User feedback",
     }
     return mapping.get(ntype, "TRAK")
 
@@ -153,6 +156,45 @@ def notify_all_admins(
     """Send the same admin alert to every admin user."""
     count = 0
     for admin in User.objects.filter(role=User.Role.ADMIN, is_active=True):
+        nid = create_notification(
+            admin.pk,
+            ntype=ntype,
+            text=text,
+            details=details,
+            important=important,
+            meta=meta,
+            audience="admin",
+            dedupe_key=f"{dedupe_key}:{admin.pk}" if dedupe_key else None,
+        )
+        if nid:
+            count += 1
+    return count
+
+
+def notify_builtin_admins(
+    *,
+    ntype: str,
+    text: str,
+    details: str = "",
+    important: bool = True,
+    meta: Optional[dict] = None,
+    dedupe_key: Optional[str] = None,
+) -> int:
+    """Send admin alert only to the three built-in admin accounts."""
+    emails = [e.lower() for e in getattr(settings, "BUILTIN_ADMIN_EMAILS_LIST", []) or []]
+    if not emails:
+        return notify_all_admins(
+            ntype=ntype,
+            text=text,
+            details=details,
+            important=important,
+            meta=meta,
+            dedupe_key=dedupe_key,
+        )
+    count = 0
+    for admin in User.objects.filter(
+        email__in=emails, role=User.Role.ADMIN, is_active=True
+    ):
         nid = create_notification(
             admin.pk,
             ntype=ntype,

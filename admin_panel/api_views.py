@@ -23,6 +23,7 @@ from news.credibility.score import (
 from admin_panel.analytics_snapshot import build_admin_analytics_snapshot
 from news.pipeline import orchestrator
 from news import platform_taxonomy
+from news import feedback_service
 from notifications.delivery import create_notification
 
 User = get_user_model()
@@ -51,6 +52,7 @@ def _serialize_raw(doc: dict) -> dict:
         "description": doc.get("description") or doc.get("summary") or doc.get("excerpt") or doc.get("clean_text") or doc.get("body_text"),
         "content": doc.get("content") or doc.get("article_text") or doc.get("text") or doc.get("clean_text") or doc.get("normalized_text") or doc.get("body_text"),
         "source_key": doc.get("source_key"),
+        "image_url": doc.get("image_url") or doc.get("image") or doc.get("thumbnail_url"),
         "pipeline_status": doc.get("pipeline_status"),
         "moderation_status": doc.get("moderation_status") or "review",
         "fetched_at": fa.isoformat() if hasattr(fa, "isoformat") else fa,
@@ -95,6 +97,7 @@ def _serialize_processed(doc: dict) -> dict:
         "description": doc.get("description") or summary or doc.get("excerpt") or doc.get("clean_text") or doc.get("body_text"),
         "content": doc.get("content") or doc.get("article_text") or doc.get("text") or doc.get("clean_text") or doc.get("normalized_text") or doc.get("body_text"),
         "source_key": doc.get("source_key"),
+        "image_url": doc.get("image_url") or doc.get("image") or doc.get("thumbnail_url"),
         "summary": summary[:500] if summary else "",
         "topic_keywords": list(doc.get("topic_keywords") or [])[:12],
         "credibility_label": doc.get("credibility_label"),
@@ -506,6 +509,7 @@ class AdminNotificationsView(APIView):
                         "details": r.get("details") or "",
                         "important": bool(r.get("important")),
                         "read": bool(r.get("read")),
+                        "meta": r.get("meta") or {},
                         "created_at": r.get("created_at"),
                     }
                     for r in rows
@@ -540,6 +544,91 @@ class AdminNotificationsView(APIView):
             audience="user",
         )
         return Response({"detail": "Notification created."}, status=status.HTTP_201_CREATED)
+
+
+class AdminNotificationMarkReadView(APIView):
+    permission_classes = [permissions.IsAuthenticated, IsAdminRole]
+
+    def post(self, request, notification_id: str):
+        try:
+            oid = ObjectId(notification_id)
+        except Exception:
+            return Response({"detail": "Invalid notification id."}, status=status.HTTP_400_BAD_REQUEST)
+        uid = request.user.pk
+        res = notifications_collection().find_one_and_update(
+            {
+                "_id": oid,
+                "user_id": {"$in": [uid, str(uid)]},
+                "audience": "admin",
+            },
+            {"$set": {"read": True, "updated_at": datetime.now(timezone.utc)}},
+            return_document=ReturnDocument.AFTER,
+        )
+        if not res:
+            return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
+        return Response(
+            {
+                "id": str(res.get("_id")),
+                "read": True,
+                "type": res.get("type"),
+                "text": res.get("text"),
+            }
+        )
+
+
+class AdminFeedbackListView(APIView):
+    permission_classes = [permissions.IsAuthenticated, IsAdminRole]
+
+    def get(self, request):
+        try:
+            limit = min(int(request.query_params.get("limit", 50)), 200)
+        except ValueError:
+            limit = 50
+        try:
+            skip = max(int(request.query_params.get("skip", 0)), 0)
+        except ValueError:
+            skip = 0
+        rows = feedback_service.list_feedback(
+            status=str(request.query_params.get("status") or "").strip(),
+            fb_type=str(request.query_params.get("type") or "").strip(),
+            category=str(request.query_params.get("category") or "").strip(),
+            article_id=str(request.query_params.get("article_id") or "").strip(),
+            limit=limit,
+            skip=skip,
+        )
+        return Response({"results": rows, "stats": feedback_service.get_feedback_stats()})
+
+
+class AdminFeedbackStatsView(APIView):
+    permission_classes = [permissions.IsAuthenticated, IsAdminRole]
+
+    def get(self, _request):
+        return Response(feedback_service.get_feedback_stats())
+
+
+class AdminFeedbackDetailView(APIView):
+    permission_classes = [permissions.IsAuthenticated, IsAdminRole]
+
+    def get(self, _request, feedback_id: str):
+        doc = feedback_service.get_feedback_by_id(feedback_id)
+        if not doc:
+            return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
+        return Response(doc)
+
+    def patch(self, request, feedback_id: str):
+        status_val = str(request.data.get("status") or "").strip()
+        admin_notes = request.data.get("admin_notes")
+        set_notes = "admin_notes" in request.data
+        doc = feedback_service.update_feedback(
+            feedback_id,
+            admin_user=request.user,
+            status=status_val,
+            admin_notes=str(admin_notes) if admin_notes is not None else None,
+            set_admin_notes=set_notes,
+        )
+        if not doc:
+            return Response({"detail": "Not found or invalid status."}, status=status.HTTP_400_BAD_REQUEST)
+        return Response(doc)
 
 
 class AdminCategoriesView(APIView):
