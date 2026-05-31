@@ -16,7 +16,7 @@ services:
       - key: CORS_ALLOWED_ORIGINS
         value: https://trak-fyp.netlify.app,http://localhost:3000,http://localhost:5173,http://127.0.0.1:3000,http://127.0.0.1:5173
       - key: CSRF_TRUSTED_ORIGINS
-        value: https://trak-backend-upip.onrender.com
+        value: https://trak-backend-upip.onrender.com,https://trak-fyp.netlify.app
       - key: MONGODB_DJANGO_DATABASE
         value: trak_django
       - key: MONGODB_RAW_DATABASE
