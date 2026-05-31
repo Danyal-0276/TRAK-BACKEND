@@ -330,6 +330,11 @@ def _synthesize_segment_once(
                 raise RuntimeError(
                     "Voice synthesis failed for this listen session. Try stopping and playing again."
                 ) from edge_err
+            if edge_tts_enabled():
+                logger.warning("Edge TTS failed (no engine fallback for listen session): %s", edge_err)
+                raise RuntimeError(
+                    "Neural voice unavailable right now. Check edge-tts is installed and try again."
+                ) from edge_err
             logger.warning("Edge TTS failed, falling back: %s", edge_err)
 
     if _prefer_local():

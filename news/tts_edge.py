@@ -189,12 +189,6 @@ def synthesize_edge_tts(text: str, language: str = "english", voice: str | None 
         raise ValueError("Text cannot be empty")
 
     async def _run() -> dict:
-        try:
-            return await _synthesize_edge_async(cleaned, language, voice=voice)
-        except Exception as edge_ur_err:
-            if str(language or "english").lower().strip() != "urdu":
-                raise
-            logger.warning("Edge Urdu path failed, trying HF fallback: %s", edge_ur_err)
-            return _remote_urdu_fallback(cleaned)
+        return await _synthesize_edge_async(cleaned, language, voice=voice)
 
     return asyncio.run(_run())
