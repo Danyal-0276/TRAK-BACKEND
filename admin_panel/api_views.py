@@ -13,7 +13,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from accounts.permissions import IsAdminRole, IsSuperAdminRole
-from news.mongo_db import notifications_collection, processed_collection, raw_collection, user_preferences_collection
+from news.mongo_db import bookmarks_collection, get_db, notifications_collection, processed_collection, raw_collection, user_preferences_collection
 from news.credibility.score import (
     compute_credibility_score_from_doc,
     effective_credibility_probs,
@@ -130,6 +130,17 @@ def _resolve_article(scope: str, article_id: str):
 class AdminArticlesView(APIView):
     permission_classes = [permissions.IsAuthenticated, IsAdminRole]
 
+    @staticmethod
+    def _pipeline_query(pipeline_status: str) -> dict | None:
+        ps = str(pipeline_status or "").strip().lower()
+        if not ps:
+            return None
+        if ps == "queue":
+            return {"pipeline_status": {"$in": ["pending", "processing"]}}
+        if ps in {"pending", "processing", "failed", "done"}:
+            return {"pipeline_status": ps}
+        return None
+
     def get(self, request):
         try:
             page = max(1, int(request.query_params.get("page", 1)))
@@ -138,6 +149,11 @@ class AdminArticlesView(APIView):
             return Response({"detail": "Invalid pagination"}, status=status.HTTP_400_BAD_REQUEST)
 
         scope = (request.query_params.get("scope") or "all").lower()
+        pipeline_status = (
+            request.query_params.get("pipeline_status")
+            or request.query_params.get("pipeline")
+            or ""
+        )
         skip = (page - 1) * page_size
 
         raw_col = raw_collection()
@@ -145,7 +161,11 @@ class AdminArticlesView(APIView):
         results: list[dict] = []
 
         if scope == "raw":
-            for doc in raw_col.find().sort("fetched_at", -1).skip(skip).limit(page_size):
+            query = self._pipeline_query(pipeline_status) or {}
+            ps_lower = str(pipeline_status or "").strip().lower()
+            sort_dir = 1 if ps_lower in {"queue", "pending", "processing"} else -1
+            cursor = raw_col.find(query).sort("fetched_at", sort_dir).skip(skip).limit(page_size)
+            for doc in cursor:
                 results.append(_serialize_raw(doc))
         elif scope == "processed":
             for doc in proc_col.find().sort("processed_at", -1).skip(skip).limit(page_size):
@@ -157,7 +177,13 @@ class AdminArticlesView(APIView):
             for doc in proc_col.find().sort("processed_at", -1).limit(page_size - half):
                 results.append(_serialize_processed(doc))
 
-        return Response({"page": page, "page_size": page_size, "scope": scope, "results": results})
+        return Response({
+            "page": page,
+            "page_size": page_size,
+            "scope": scope,
+            "pipeline_status": str(pipeline_status or "").strip().lower() or None,
+            "results": results,
+        })
 
 
 class AdminAnalyticsView(APIView):
@@ -208,6 +234,12 @@ class AdminPipelineRunView(APIView):
             limit = min(500, max(1, int(request.data.get("limit", 10))))
         except (TypeError, ValueError):
             limit = 10
+        try:
+            orchestrator.heal_stuck_raw_pipeline(
+                stale_minutes=getattr(settings, "PIPELINE_STALE_MINUTES", 30)
+            )
+        except Exception:
+            pass
         result = orchestrator.run_batch(limit=limit, workers=1)
         try:
             from notifications.admin_alerts import notify_admin_pipeline_batch
@@ -253,8 +285,53 @@ def _serialize_admin_user(u: User) -> dict:
         "role": u.role,
         "is_active": bool(u.is_active),
         "is_super_admin": bool(getattr(u, "is_super_admin", False)),
+        "email_verified": bool(getattr(u, "email_verified", False)),
         "created_at": u.created_at,
     }
+
+
+def _admin_user_profile(user_id) -> dict:
+    profile = get_db()["user_profiles"].find_one({"user_id": user_id}) or {}
+    return {
+        "full_name": profile.get("full_name") or "",
+        "username": profile.get("username") or "",
+        "phone": profile.get("phone") or "",
+        "phone_verified": bool(profile.get("phone_verified")),
+        "bio": profile.get("bio") or "",
+        "avatar_image": profile.get("avatar_image") or "",
+    }
+
+
+def _admin_user_bookmarks(user_id, limit: int = 50) -> list[dict]:
+    rows = list(
+        bookmarks_collection()
+        .find({"user_id": user_id})
+        .sort("created_at", -1)
+        .limit(limit)
+    )
+    out: list[dict] = []
+    proc = processed_collection()
+    for row in rows:
+        aid = row.get("article_id")
+        title = row.get("title") or ""
+        url = row.get("url") or row.get("canonical_url") or ""
+        if aid and not title:
+            try:
+                doc = proc.find_one({"_id": ObjectId(str(aid))}, {"title": 1, "canonical_url": 1})
+            except Exception:
+                doc = None
+            if doc:
+                title = doc.get("title") or title
+                url = doc.get("canonical_url") or url
+        out.append(
+            {
+                "article_id": str(aid) if aid is not None else "",
+                "title": title or "Untitled",
+                "url": url,
+                "created_at": row.get("created_at"),
+            }
+        )
+    return out
 
 
 class AdminUsersView(APIView):
@@ -296,6 +373,17 @@ class AdminAdminsCreateView(APIView):
 
 class AdminUserDetailView(APIView):
     permission_classes = [permissions.IsAuthenticated, IsAdminRole]
+
+    def get(self, request, user_id: str):
+        user = User.objects.filter(pk=user_id).first()
+        if not user:
+            return Response({"detail": "User not found."}, status=status.HTTP_404_NOT_FOUND)
+        payload = {
+            **_serialize_admin_user(user),
+            **_admin_user_profile(user.pk),
+            "bookmarks": _admin_user_bookmarks(user.pk),
+        }
+        return Response(payload, status=status.HTTP_200_OK)
 
     def patch(self, request, user_id: str):
         user = User.objects.filter(pk=user_id).first()
