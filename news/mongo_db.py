@@ -72,6 +72,30 @@ def article_reports_collection() -> Collection:
     return get_db()[name]
 
 
+def user_feedback_collection() -> Collection:
+    name = getattr(settings, "MONGODB_USER_FEEDBACK_COLLECTION", "user_feedback")
+    return get_db()[name]
+
+
+def ensure_feedback_indexes() -> None:
+    """Idempotent indexes for user feedback."""
+    from pymongo import DESCENDING
+
+    fb = user_feedback_collection()
+    fb.create_index([("status", ASCENDING), ("created_at", DESCENDING)])
+    fb.create_index([("article_id", ASCENDING), ("created_at", DESCENDING)])
+    fb.create_index([("user_id", ASCENDING), ("created_at", DESCENDING)])
+    try:
+        fb.create_index(
+            [("user_id", ASCENDING), ("article_id", ASCENDING), ("category", ASCENDING)],
+            unique=True,
+            sparse=True,
+            name="user_feedback_article_category_unique",
+        )
+    except Exception:
+        pass
+
+
 def ensure_all_article_indexes() -> None:
     """Idempotent indexes for raw, processed, and user_keywords."""
     from news.scrapers import storage as raw_storage
@@ -116,3 +140,5 @@ def ensure_all_article_indexes() -> None:
 
     reactions = reactions_collection()
     reactions.create_index([("user_id", ASCENDING), ("article_id", ASCENDING)], unique=True)
+
+    ensure_feedback_indexes()

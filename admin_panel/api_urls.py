@@ -3,6 +3,8 @@ from django.urls import path
 from . import api_views
 
 urlpatterns = [
+    path("articles/lookup/", api_views.AdminArticleLookupView.as_view(), name="admin-article-lookup"),
+    path("articles/image-proxy/", api_views.AdminArticleImageProxyView.as_view(), name="admin-article-image-proxy"),
     path("articles/", api_views.AdminArticlesView.as_view(), name="admin-articles"),
     path("articles/<str:scope>/<str:article_id>/", api_views.AdminArticleDetailView.as_view(), name="admin-article-detail"),
     path("analytics/", api_views.AdminAnalyticsView.as_view(), name="admin-analytics"),
@@ -31,5 +33,13 @@ urlpatterns = [
         name="admin-connection-detail",
     ),
     path("notifications/", api_views.AdminNotificationsView.as_view(), name="admin-notifications"),
+    path(
+        "notifications/<str:notification_id>/mark-read/",
+        api_views.AdminNotificationMarkReadView.as_view(),
+        name="admin-notification-mark-read",
+    ),
+    path("feedback/", api_views.AdminFeedbackListView.as_view(), name="admin-feedback-list"),
+    path("feedback/stats/", api_views.AdminFeedbackStatsView.as_view(), name="admin-feedback-stats"),
+    path("feedback/<str:feedback_id>/", api_views.AdminFeedbackDetailView.as_view(), name="admin-feedback-detail"),
 ]
  

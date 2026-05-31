@@ -8,6 +8,7 @@ from typing import Any
 from django.conf import settings
 
 from news import platform_taxonomy
+from news import feedback_service
 from news.mongo_db import processed_collection, raw_collection
 from news.pipeline import orchestrator
 from news.scrape_sources import connection_display_name, ingest_sources_summary
@@ -236,6 +237,12 @@ def build_admin_analytics_snapshot() -> dict[str, Any]:
     pipeline_summary["needs_pipeline"] = pipeline_summary["pending"] + pipeline_summary["failed"]
     connections = _connections_summary()
 
+    feedback_stats = {"pending": 0, "reviewed": 0, "dismissed": 0, "total": 0, "by_category": {}, "by_type": {}, "daily": []}
+    try:
+        feedback_stats = feedback_service.get_feedback_stats()
+    except Exception:
+        pass
+
     return {
         "raw_total": raw_total,
         "processed_total": processed_total,
@@ -258,5 +265,6 @@ def build_admin_analytics_snapshot() -> dict[str, Any]:
         "recent_pipeline_failures": recent_failures,
         "users_total": users_total,
         "users_active": users_active,
+        "feedback_stats": feedback_stats,
         "generated_at": datetime.now(timezone.utc).isoformat(),
     }

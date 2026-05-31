@@ -10,6 +10,7 @@ urlpatterns = [
     path("keywords/", user_views.UserKeywordsView.as_view(), name="user-keywords"),
     path("track-keywords/", user_views.TrackKeywordsView.as_view(), name="user-track-keywords"),
     path("reports/", user_views.ArticleReportView.as_view(), name="user-article-report"),
+    path("feedback/", user_views.UserFeedbackView.as_view(), name="user-feedback"),
     path("articles/<str:article_id>/", user_views.ArticleDetailView.as_view(), name="user-article-detail"),
     path("article-tts/plan/", user_views.ArticleTtsPlanView.as_view(), name="user-article-tts-plan"),
     path("article-tts/chunk/", user_views.ArticleTtsChunkView.as_view(), name="user-article-tts-chunk"),

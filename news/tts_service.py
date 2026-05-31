@@ -253,24 +253,88 @@ def plan_article_tts_segments(text: str) -> list[str]:
 
 def _finalize_segment_payload(payload: dict) -> dict:
     if str(payload.get("format") or "").lower() == "mp3":
+        if payload.get("voice_id") and "voice_id" not in payload:
+            pass
         return payload
     payload["format"] = "wav"
     payload["audio"] = _wav_base64_for_browsers(str(payload["audio"]))
     return payload
 
 
-def _synthesize_segment_once(text: str, language: str) -> dict:
+def _tts_session_cache_key(session_id: str) -> str:
+    return f"tts:session:{str(session_id or '').strip()}"
+
+
+def _get_tts_session(session_id: str | None) -> dict | None:
+    sid = str(session_id or "").strip()
+    if not sid:
+        return None
+    try:
+        from django.core.cache import cache
+
+        val = cache.get(_tts_session_cache_key(sid))
+        return val if isinstance(val, dict) else None
+    except Exception:
+        return None
+
+
+def _set_tts_session(session_id: str | None, data: dict, ttl: int = 7200) -> None:
+    sid = str(session_id or "").strip()
+    if not sid or not data:
+        return
+    try:
+        from django.core.cache import cache
+
+        cache.set(_tts_session_cache_key(sid), data, timeout=ttl)
+    except Exception:
+        pass
+
+
+def _synthesize_segment_once(
+    text: str,
+    language: str,
+    *,
+    tts_session_id: str | None = None,
+    voice: str | None = None,
+) -> dict:
     """Synthesize one segment (no merge)."""
     chunk = " ".join(str(text or "").split())
     if not chunk:
         raise ValueError("Text cannot be empty")
 
-    from news.tts_edge import edge_tts_enabled, synthesize_edge_tts
+    from news.tts_edge import edge_tts_enabled, pick_session_voice, synthesize_edge_tts
 
-    if edge_tts_enabled():
+    session = _get_tts_session(tts_session_id)
+    sticky_source = (session or {}).get("source")
+    sticky_voice = voice or (session or {}).get("voice")
+
+    if edge_tts_enabled() and sticky_source != "vits":
         try:
-            return _finalize_segment_payload(synthesize_edge_tts(chunk, language=language))
+            resolved_voice = sticky_voice or pick_session_voice(language, None)
+            payload = _finalize_segment_payload(
+                synthesize_edge_tts(chunk, language=language, voice=resolved_voice)
+            )
+            if tts_session_id:
+                _set_tts_session(
+                    tts_session_id,
+                    {
+                        "source": "edge",
+                        "voice": payload.get("voice_id") or resolved_voice,
+                        "language": language,
+                    },
+                )
+            return payload
         except Exception as edge_err:
+            if sticky_source == "edge" or sticky_voice:
+                logger.warning("Edge TTS failed for pinned session voice: %s", edge_err)
+                raise RuntimeError(
+                    "Voice synthesis failed for this listen session. Try stopping and playing again."
+                ) from edge_err
+            if edge_tts_enabled():
+                logger.warning("Edge TTS failed (no engine fallback for listen session): %s", edge_err)
+                raise RuntimeError(
+                    "Neural voice unavailable right now. Check edge-tts is installed and try again."
+                ) from edge_err
             logger.warning("Edge TTS failed, falling back: %s", edge_err)
 
     if _prefer_local():
@@ -283,17 +347,31 @@ def _synthesize_segment_once(text: str, language: str) -> dict:
             payload = _remote_synthesize_one(chunk, language)
             payload["source"] = "remote"
         except RuntimeError as remote_err:
+            if sticky_source in ("edge", "remote", "local"):
+                raise RuntimeError(
+                    "Voice synthesis failed for this listen session. Try stopping and playing again."
+                ) from remote_err
             logger.info("Remote TTS segment failed, local fallback: %s", remote_err)
             from news.tts_local import synthesize_local_tts
 
             payload = synthesize_local_tts(chunk, language=language)
             payload["source"] = "local"
 
+    if tts_session_id and not session:
+        _set_tts_session(
+            tts_session_id,
+            {"source": payload.get("source", "vits"), "voice": None, "language": language},
+        )
+
     return _finalize_segment_payload(payload)
 
 
 def synthesize_article_tts_segments_batch(
-    segments: list[str], language: str = "english"
+    segments: list[str],
+    language: str = "english",
+    *,
+    tts_session_id: str | None = None,
+    voice: str | None = None,
 ) -> list[dict]:
     """Synthesize up to TTS_BATCH_MAX segments in parallel (fewer round-trips)."""
     from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -307,7 +385,13 @@ def synthesize_article_tts_segments_batch(
     workers = min(TTS_BATCH_MAX, len(texts))
     with ThreadPoolExecutor(max_workers=workers) as pool:
         futures = {
-            pool.submit(synthesize_article_tts_segment, t, language): i
+            pool.submit(
+                synthesize_article_tts_segment,
+                t,
+                language,
+                tts_session_id=tts_session_id,
+                voice=voice,
+            ): i
             for i, t in enumerate(texts)
         }
         for fut in as_completed(futures):
@@ -316,9 +400,17 @@ def synthesize_article_tts_segments_batch(
     return [r for r in results if r is not None]
 
 
-def synthesize_article_tts_segment(text: str, language: str = "english") -> dict:
+def synthesize_article_tts_segment(
+    text: str,
+    language: str = "english",
+    *,
+    tts_session_id: str | None = None,
+    voice: str | None = None,
+) -> dict:
     """Public API: one chunk of audio for streaming playback."""
-    return _synthesize_segment_once(text, language)
+    return _synthesize_segment_once(
+        text, language, tts_session_id=tts_session_id, voice=voice
+    )
 
 
 def synthesize_article_tts(text: str, language: str = "english") -> dict:

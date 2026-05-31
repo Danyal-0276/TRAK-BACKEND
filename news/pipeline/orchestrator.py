@@ -15,6 +15,7 @@ from typing import Any, Optional
 from pymongo import ReturnDocument
 
 from news.credibility.inference import predict_credibility
+from news.article_media import article_image_url
 from news.mongo_db import processed_collection, raw_collection
 from news.notifications.keyword_alerts import notify_keyword_matches_for_article
 from news.pipeline.keywords import extract_topic_keywords
@@ -79,6 +80,7 @@ def process_one_raw(doc: dict) -> dict[str, Any]:
     topic_keywords = extract_topic_keywords(cleaned, title, summary, entities)
     published_at = doc.get("published_at")
     now = datetime.now(timezone.utc)
+    image_url = article_image_url(doc)
 
     processed_doc = {
         "canonical_url": canonical,
@@ -104,6 +106,12 @@ def process_one_raw(doc: dict) -> dict[str, Any]:
         },
         **cred,
     }
+    if image_url:
+        processed_doc["image_url"] = image_url
+
+    from news.moderation_rules import initial_moderation_status
+
+    processed_doc["moderation_status"] = initial_moderation_status({**processed_doc, **cred})
 
     proc = processed_collection()
     proc.replace_one({"canonical_url": canonical}, processed_doc, upsert=True)

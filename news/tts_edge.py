@@ -15,11 +15,12 @@ from django.conf import settings
 logger = logging.getLogger(__name__)
 
 EN_VOICE = "en-US-JennyNeural"
-UR_VOICES = (
+# Female voices only — no male fallback per segment
+UR_VOICES_FEMALE = (
     "ur-PK-UzmaNeural",
-    "ur-PK-AsadNeural",
     "ur-IN-GulNeural",
 )
+UR_VOICES = UR_VOICES_FEMALE
 
 
 def _setting(name: str, default: str) -> str:
@@ -120,7 +121,62 @@ def _remote_urdu_fallback(english_text: str) -> dict:
     return _finalize_segment_payload(payload)
 
 
-def synthesize_edge_tts(text: str, language: str = "english") -> dict:
+def pick_session_voice(language: str, voice: str | None = None) -> str:
+    """Resolve Edge voice for a listen session (female-only)."""
+    lang = str(language or "english").lower().strip()
+    if lang == "english":
+        return EN_VOICE
+    if voice and voice in UR_VOICES_FEMALE:
+        return voice
+    return UR_VOICES_FEMALE[0]
+
+
+async def _synthesize_edge_async(text: str, language: str, voice: str | None = None) -> dict:
+    cleaned = _sanitize_for_tts(text)
+    if not cleaned:
+        raise ValueError("Text cannot be empty")
+    lang = str(language or "english").lower().strip()
+    resolved = pick_session_voice(lang, voice)
+
+    if lang == "english":
+        audio = await _stream_edge_audio(cleaned, resolved)
+        return {
+            "audio": base64.b64encode(audio).decode("ascii"),
+            "language": "english",
+            "format": "mp3",
+            "source": "edge",
+            "voice_id": resolved,
+        }
+
+    urdu_text = await asyncio.to_thread(_translate_en_to_ur, cleaned)
+    try:
+        audio = await _stream_edge_audio(urdu_text, resolved)
+    except Exception:
+        if resolved != UR_VOICES_FEMALE[0]:
+            resolved = UR_VOICES_FEMALE[0]
+            audio = await _stream_edge_audio(urdu_text, resolved)
+        else:
+            for alt in UR_VOICES_FEMALE[1:]:
+                try:
+                    audio = await _stream_edge_audio(urdu_text, alt)
+                    resolved = alt
+                    break
+                except Exception:
+                    continue
+            else:
+                raise
+    return {
+        "audio": base64.b64encode(audio).decode("ascii"),
+        "language": "urdu",
+        "format": "mp3",
+        "source": "edge",
+        "voice_id": resolved,
+        "original_text": cleaned,
+        "urdu_text": urdu_text,
+    }
+
+
+def synthesize_edge_tts(text: str, language: str = "english", voice: str | None = None) -> dict:
     try:
         import edge_tts  # noqa: F401
     except ImportError as e:
@@ -132,31 +188,7 @@ def synthesize_edge_tts(text: str, language: str = "english") -> dict:
     if not cleaned:
         raise ValueError("Text cannot be empty")
 
-    lang = str(language or "english").lower().strip()
-
     async def _run() -> dict:
-        if lang == "english":
-            audio = await _stream_edge_audio(cleaned, EN_VOICE)
-            return {
-                "audio": base64.b64encode(audio).decode("ascii"),
-                "language": "english",
-                "format": "mp3",
-                "source": "edge",
-            }
-
-        try:
-            urdu_text = await asyncio.to_thread(_translate_en_to_ur, cleaned)
-            audio = await _stream_edge_audio_any_voice(urdu_text, UR_VOICES)
-            return {
-                "audio": base64.b64encode(audio).decode("ascii"),
-                "language": "urdu",
-                "format": "mp3",
-                "source": "edge",
-                "original_text": cleaned,
-                "urdu_text": urdu_text,
-            }
-        except Exception as edge_ur_err:
-            logger.warning("Edge Urdu path failed, trying HF fallback: %s", edge_ur_err)
-            return _remote_urdu_fallback(cleaned)
+        return await _synthesize_edge_async(cleaned, language, voice=voice)
 
     return asyncio.run(_run())

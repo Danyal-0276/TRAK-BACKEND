@@ -31,11 +31,23 @@ def fanout_notification(
 
         text = str(notification.get("text") or notification.get("message") or "").strip()
         title = str(notification.get("title") or notification.get("type") or "TRAK")
+        meta = notification.get("meta") or {}
+        fcm_data = {
+            k: str(v)
+            for k, v in notification.items()
+            if k in ("id", "type", "text", "details", "audience")
+        }
+        if meta.get("article_id"):
+            fcm_data["article_id"] = str(meta["article_id"])
+        if meta.get("feedback_id"):
+            fcm_data["feedback_id"] = str(meta["feedback_id"])
         send_fcm_to_user(
             user_id,
             title=title[:80] or "TRAK",
             body=text[:500] or "You have a new notification.",
-            data={k: str(v) for k, v in notification.items() if k in ("id", "type", "text", "details", "audience")},
+            data=fcm_data,
         )
-    except Exception:
-        pass
+    except Exception as exc:
+        import logging
+
+        logging.getLogger(__name__).warning("FCM delivery failed for user %s: %s", user_id, exc)
