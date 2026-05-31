@@ -159,6 +159,50 @@ def requeue_stale_processing(*, stale_minutes: int = 30) -> int:
     return int(result.modified_count)
 
 
+def heal_stuck_raw_pipeline(*, stale_minutes: int = 30) -> dict[str, int]:
+    """
+    Fix raw rows stuck in processing:
+    - already have processed_articles output → mark done
+    - otherwise stale → back to pending
+    """
+    raw = raw_collection()
+    proc_name = processed_collection().name
+    healed = 0
+    try:
+        stuck_ids = [
+            doc["_id"]
+            for doc in raw.aggregate(
+                [
+                    {"$match": {"pipeline_status": "processing"}},
+                    {"$project": {"canonical_url": 1}},
+                    {
+                        "$lookup": {
+                            "from": proc_name,
+                            "localField": "canonical_url",
+                            "foreignField": "canonical_url",
+                            "as": "proc",
+                        }
+                    },
+                    {"$match": {"proc.0": {"$exists": True}}},
+                    {"$project": {"_id": 1}},
+                ]
+            )
+        ]
+        if stuck_ids:
+            result = raw.update_many(
+                {"_id": {"$in": stuck_ids}},
+                {
+                    "$set": {"pipeline_status": "done", "processed_at": datetime.now(timezone.utc)},
+                    "$unset": {"processing_started_at": ""},
+                },
+            )
+            healed = int(result.modified_count)
+    except Exception:
+        healed = 0
+    requeued = requeue_stale_processing(stale_minutes=stale_minutes)
+    return {"healed_done": healed, "requeued": requeued}
+
+
 def mark_raw_for_reprocess(*, include_failed: bool = True) -> int:
     """
     Queue existing raw_articles for another pipeline pass (same processed_articles upsert).

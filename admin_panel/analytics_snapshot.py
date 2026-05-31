@@ -5,8 +5,11 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
+from django.conf import settings
+
 from news import platform_taxonomy
 from news.mongo_db import processed_collection, raw_collection
+from news.pipeline import orchestrator
 from news.scrape_sources import connection_display_name, ingest_sources_summary
 
 _CRED_LABELS = {"0": "Real", "1": "Fake", "2": "Suspicious", "none": "Unset"}
@@ -64,13 +67,31 @@ def _daily_series(col, date_field: str, days: int = 14) -> list[dict[str, Any]]:
     return [{"date": d, "label": d[5:], "count": buckets[d]} for d in sorted(buckets.keys())]
 
 
-def _pipeline_summary(pipeline_counts: dict[str, int], raw_total: int) -> dict[str, Any]:
+def _stale_processing_query(*, stale_minutes: int | None = None) -> dict[str, Any]:
+    mins = stale_minutes if stale_minutes is not None else getattr(settings, "PIPELINE_STALE_MINUTES", 30)
+    cutoff = datetime.now(timezone.utc) - timedelta(minutes=max(1, int(mins)))
+    return {
+        "pipeline_status": "processing",
+        "$or": [
+            {"processing_started_at": {"$lt": cutoff}},
+            {"processing_started_at": {"$exists": False}},
+        ],
+    }
+
+
+def _pipeline_summary(pipeline_counts: dict[str, int], raw_total: int, *, raw_col) -> dict[str, Any]:
     pending = int(pipeline_counts.get("pending") or 0)
     processing = int(pipeline_counts.get("processing") or 0)
     done = int(pipeline_counts.get("done") or 0)
     failed = int(pipeline_counts.get("failed") or 0)
     unknown = int(pipeline_counts.get("unknown") or 0)
-    queued = pending + processing
+    stale_processing = 0
+    try:
+        stale_processing = int(raw_col.count_documents(_stale_processing_query()))
+    except Exception:
+        stale_processing = 0
+    active_processing = max(0, processing - stale_processing)
+    queued = pending + active_processing
     finished = done + failed
     completion_pct = round(100.0 * done / max(1, raw_total), 1) if raw_total else 0.0
     success_pct = round(100.0 * done / max(1, finished), 1) if finished else 0.0
@@ -80,6 +101,8 @@ def _pipeline_summary(pipeline_counts: dict[str, int], raw_total: int) -> dict[s
         "done": done,
         "failed": failed,
         "unknown": unknown,
+        "stale_processing": stale_processing,
+        "active_processing": active_processing,
         "queued": queued,
         "completion_pct": completion_pct,
         "success_pct": success_pct,
@@ -143,6 +166,13 @@ def build_admin_analytics_snapshot() -> dict[str, Any]:
     raw_col = raw_collection()
     proc_col = processed_collection()
 
+    try:
+        orchestrator.heal_stuck_raw_pipeline(
+            stale_minutes=getattr(settings, "PIPELINE_STALE_MINUTES", 30)
+        )
+    except Exception:
+        pass
+
     raw_total = raw_col.estimated_document_count()
     processed_total = proc_col.estimated_document_count()
 
@@ -201,7 +231,7 @@ def build_admin_analytics_snapshot() -> dict[str, Any]:
     except Exception:
         pass
 
-    pipeline_summary = _pipeline_summary(pipeline_counts, raw_total)
+    pipeline_summary = _pipeline_summary(pipeline_counts, raw_total, raw_col=raw_col)
     pipeline_summary["processed_stale"] = _count_processed_stale(raw_col, proc_col)
     pipeline_summary["needs_pipeline"] = pipeline_summary["pending"] + pipeline_summary["failed"]
     connections = _connections_summary()
