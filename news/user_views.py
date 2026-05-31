@@ -184,7 +184,7 @@ class UserFeedbackView(APIView):
         )
         if err:
             return Response({"detail": err}, status=code)
-        return Response(data, status=code)
+        return Response({"detail": "Feedback submitted.", "feedback": data}, status=code)
 
 
 class ArticleReportView(APIView):

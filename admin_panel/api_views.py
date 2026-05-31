@@ -16,6 +16,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from accounts.permissions import IsAdminRole, IsSuperAdminRole
+from news.mongo_json import mongo_json
 from news.mongo_db import bookmarks_collection, get_db, notifications_collection, processed_collection, raw_collection, user_preferences_collection
 from news.credibility.score import (
     compute_credibility_score_from_doc,
@@ -626,14 +627,14 @@ class AdminNotificationsView(APIView):
                 "results": [
                     {
                         "id": str(r.get("_id")),
-                        "user_id": r.get("user_id"),
+                        "user_id": mongo_json(r.get("user_id")),
                         "type": r.get("type"),
                         "text": r.get("text"),
                         "details": r.get("details") or "",
                         "important": bool(r.get("important")),
                         "read": bool(r.get("read")),
-                        "meta": r.get("meta") or {},
-                        "created_at": r.get("created_at"),
+                        "meta": mongo_json(r.get("meta") or {}),
+                        "created_at": mongo_json(r.get("created_at")),
                     }
                     for r in rows
                 ]

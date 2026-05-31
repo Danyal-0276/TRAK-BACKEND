@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
+from bson import ObjectId
 from django.contrib.auth import get_user_model
 
 from news.feedback_constants import (
@@ -14,7 +15,6 @@ from news.feedback_constants import (
 )
 from news.mongo_db import user_feedback_collection
 from news.services import article_query
-from notifications.delivery import notify_builtin_admins
 
 User = get_user_model()
 
@@ -24,6 +24,27 @@ DEDUPE_HOURS = 24
 
 def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def _json_safe(value: Any) -> Any:
+    """Convert MongoDB / datetime values to JSON-serializable primitives."""
+    if value is None:
+        return None
+    if isinstance(value, ObjectId):
+        return str(value)
+    if isinstance(value, datetime):
+        return value.isoformat()
+    if isinstance(value, dict):
+        return {k: _json_safe(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_safe(v) for v in value]
+    return value
+
+
+def _optional_id(value: Any) -> Optional[str]:
+    if value is None or value == "":
+        return None
+    return str(value)
 
 
 def _normalize_category(raw: str) -> str:
@@ -63,16 +84,20 @@ def _notify_admins_for_feedback(
     category: str,
     message: str,
     user_id: int,
+    reporter_email: str = "",
     article_id: Optional[str],
     post_title: str = "",
 ) -> None:
+    from notifications.delivery import notify_all_admins
+
     label = _category_label(category)
     ntype = "admin_user_report" if fb_type == "article_report" else "admin_user_feedback"
-    text = f"New user {fb_type.replace('_', ' ')}: {label}"
+    who = reporter_email or f"user #{user_id}"
+    text = f"{who} submitted {label.lower()} feedback"
     if post_title:
-        text = f"{text} — {post_title[:80]}"
+        text = f"{text}: {post_title[:80]}"
     details = (message or label)[:500]
-    notify_builtin_admins(
+    notify_all_admins(
         ntype=ntype,
         text=text,
         details=details,
@@ -82,6 +107,7 @@ def _notify_admins_for_feedback(
             "article_id": article_id or "",
             "category": category,
             "user_id": user_id,
+            "reporter_email": reporter_email,
             "post_title": post_title[:200] if post_title else "",
             "feedback_type": fb_type,
         },
@@ -139,7 +165,7 @@ def submit_user_feedback(
     base_doc = {
         "user_id": user_id,
         "type": fb_type,
-        "article_id": article_id or None,
+        "article_id": _optional_id(article_id),
         "url": url or None,
         "category": category,
         "message": message,
@@ -183,6 +209,7 @@ def submit_user_feedback(
         category=category,
         message=message,
         user_id=user_id,
+        reporter_email=str(getattr(user, "email", "") or ""),
         article_id=article_id or None,
         post_title=post_title,
     )
@@ -191,23 +218,21 @@ def submit_user_feedback(
 
 
 def serialize_feedback(doc: dict, *, reporter_email: str = "") -> dict:
-    created = doc.get("created_at")
-    reviewed = doc.get("reviewed_at")
     return {
-        "id": str(doc.get("_id")),
-        "user_id": doc.get("user_id"),
+        "id": str(doc.get("_id")) if doc.get("_id") is not None else None,
+        "user_id": _json_safe(doc.get("user_id")),
         "reporter_email": reporter_email,
         "type": doc.get("type"),
-        "article_id": doc.get("article_id"),
+        "article_id": _optional_id(doc.get("article_id")),
         "url": doc.get("url"),
         "category": doc.get("category"),
         "category_label": _category_label(str(doc.get("category") or "")),
         "message": doc.get("message") or "",
         "status": doc.get("status") or "pending",
         "admin_notes": doc.get("admin_notes"),
-        "reviewed_by": doc.get("reviewed_by"),
-        "reviewed_at": reviewed.isoformat() if hasattr(reviewed, "isoformat") else reviewed,
-        "created_at": created.isoformat() if hasattr(created, "isoformat") else created,
+        "reviewed_by": _json_safe(doc.get("reviewed_by")),
+        "reviewed_at": _json_safe(doc.get("reviewed_at")),
+        "created_at": _json_safe(doc.get("created_at")),
     }
 
 

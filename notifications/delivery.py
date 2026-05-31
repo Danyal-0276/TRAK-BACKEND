@@ -9,6 +9,7 @@ from typing import Any, Optional
 from django.conf import settings
 from django.contrib.auth import get_user_model
 
+from news.mongo_json import mongo_json
 from news.mongo_db import notifications_collection, user_preferences_collection
 from notifications.email_delivery import send_notification_email
 from notifications.realtime import fanout_notification
@@ -80,6 +81,7 @@ def create_notification(
             return str(existing.get("_id"))
 
     now = _utc_now()
+    safe_meta = mongo_json(meta or {})
     doc = {
         "user_id": user_id,
         "audience": audience,
@@ -89,7 +91,7 @@ def create_notification(
         "keyword": keyword,
         "important": bool(important),
         "read": False,
-        "meta": meta or {},
+        "meta": safe_meta,
         "dedupe_key": dedupe_key,
         "created_at": now,
         "updated_at": now,
@@ -108,7 +110,7 @@ def create_notification(
         "important": important,
         "read": False,
         "created_at": now.isoformat(),
-        "meta": doc["meta"],
+        "meta": safe_meta,
         "audience": audience,
     }
 
