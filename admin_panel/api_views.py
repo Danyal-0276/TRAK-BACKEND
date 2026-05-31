@@ -321,6 +321,19 @@ class AdminAnalyticsView(APIView):
 class AdminArticleDetailView(APIView):
     permission_classes = [permissions.IsAuthenticated, IsAdminRole]
 
+    def get(self, request, scope: str, article_id: str):
+        try:
+            col, oid = _resolve_article(scope, article_id)
+        except ValueError as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        doc = col.find_one({"_id": oid})
+        if not doc:
+            return Response({"detail": "Article not found."}, status=status.HTTP_404_NOT_FOUND)
+        if scope == "processed":
+            hydrate_processed_image_urls([doc], raw_collection())
+            return Response(_serialize_processed(doc))
+        return Response(_serialize_raw(doc))
+
     def patch(self, request, scope: str, article_id: str):
         try:
             col, oid = _resolve_article(scope, article_id)
@@ -351,6 +364,31 @@ class AdminArticleDetailView(APIView):
         if result.deleted_count == 0:
             return Response({"detail": "Article not found."}, status=status.HTTP_404_NOT_FOUND)
         return Response({"detail": "Article deleted."}, status=status.HTTP_200_OK)
+
+
+class AdminArticleLookupView(APIView):
+    """Resolve article by id across processed then raw collections."""
+
+    permission_classes = [permissions.IsAuthenticated, IsAdminRole]
+
+    def get(self, request):
+        article_id = str(request.query_params.get("id") or "").strip()
+        if not article_id:
+            return Response({"detail": "id query parameter is required."}, status=status.HTTP_400_BAD_REQUEST)
+        raw_col = raw_collection()
+        for scope in ("processed", "raw"):
+            try:
+                col, oid = _resolve_article(scope, article_id)
+            except ValueError:
+                continue
+            doc = col.find_one({"_id": oid})
+            if not doc:
+                continue
+            if scope == "processed":
+                hydrate_processed_image_urls([doc], raw_col)
+                return Response(_serialize_processed(doc))
+            return Response(_serialize_raw(doc))
+        return Response({"detail": "Article not found."}, status=status.HTTP_404_NOT_FOUND)
 
 
 class AdminPipelineRunView(APIView):

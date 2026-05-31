@@ -278,8 +278,15 @@ class ArticleTtsChunkView(APIView):
             )
         if not text:
             return Response({"detail": "text is required"}, status=status.HTTP_400_BAD_REQUEST)
+        tts_session_id = str(request.data.get("tts_session_id") or "").strip() or None
+        voice = str(request.data.get("voice") or "").strip() or None
         try:
-            payload = synthesize_article_tts_segment(text, language=language)
+            payload = synthesize_article_tts_segment(
+                text,
+                language=language,
+                tts_session_id=tts_session_id,
+                voice=voice,
+            )
         except ValueError as e:
             return Response({"detail": str(e)}, status=status.HTTP_400_BAD_REQUEST)
         except RuntimeError as e:
@@ -305,8 +312,15 @@ class ArticleTtsChunksView(APIView):
         segments = [str(s or "").strip() for s in raw if str(s or "").strip()]
         if not segments:
             return Response({"detail": "segments must contain text"}, status=status.HTTP_400_BAD_REQUEST)
+        tts_session_id = str(request.data.get("tts_session_id") or "").strip() or None
+        voice = str(request.data.get("voice") or "").strip() or None
         try:
-            chunks = synthesize_article_tts_segments_batch(segments, language=language)
+            chunks = synthesize_article_tts_segments_batch(
+                segments,
+                language=language,
+                tts_session_id=tts_session_id,
+                voice=voice,
+            )
         except ValueError as e:
             return Response({"detail": str(e)}, status=status.HTTP_400_BAD_REQUEST)
         except RuntimeError as e:

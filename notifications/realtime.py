@@ -47,5 +47,7 @@ def fanout_notification(
             body=text[:500] or "You have a new notification.",
             data=fcm_data,
         )
-    except Exception:
-        pass
+    except Exception as exc:
+        import logging
+
+        logging.getLogger(__name__).warning("FCM delivery failed for user %s: %s", user_id, exc)

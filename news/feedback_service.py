@@ -111,7 +111,7 @@ def _notify_admins_for_feedback(
             "post_title": post_title[:200] if post_title else "",
             "feedback_type": fb_type,
         },
-        dedupe_key=f"feedback:{feedback_id}",
+        dedupe_key=f"feedback:{feedback_id}:{int(_utc_now().timestamp())}",
     )
 
 
@@ -166,6 +166,7 @@ def submit_user_feedback(
         "user_id": user_id,
         "type": fb_type,
         "article_id": _optional_id(article_id),
+        "article_title": post_title[:500] if post_title else None,
         "url": url or None,
         "category": category,
         "message": message,
@@ -224,6 +225,7 @@ def serialize_feedback(doc: dict, *, reporter_email: str = "") -> dict:
         "reporter_email": reporter_email,
         "type": doc.get("type"),
         "article_id": _optional_id(doc.get("article_id")),
+        "article_title": doc.get("article_title") or "",
         "url": doc.get("url"),
         "category": doc.get("category"),
         "category_label": _category_label(str(doc.get("category") or "")),
