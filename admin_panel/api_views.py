@@ -3,10 +3,13 @@ from __future__ import annotations
 import json
 from datetime import datetime, timezone
 from pathlib import Path
+from urllib.parse import urlparse
+from urllib.request import Request, urlopen
 
 from bson import ObjectId
 from django.conf import settings
 from django.contrib.auth import get_user_model
+from django.http import HttpResponse
 from pymongo import ReturnDocument
 from rest_framework import permissions, status
 from rest_framework.response import Response
@@ -24,6 +27,13 @@ from admin_panel.analytics_snapshot import build_admin_analytics_snapshot
 from news.pipeline import orchestrator
 from news import platform_taxonomy
 from news import feedback_service
+from news.article_media import article_image_url, hydrate_processed_image_urls
+from news.article_counts import build_admin_article_counts
+from news.moderation_rules import (
+    auto_approved_query,
+    initial_moderation_status,
+    needs_review_query,
+)
 from notifications.delivery import create_notification
 
 User = get_user_model()
@@ -52,7 +62,7 @@ def _serialize_raw(doc: dict) -> dict:
         "description": doc.get("description") or doc.get("summary") or doc.get("excerpt") or doc.get("clean_text") or doc.get("body_text"),
         "content": doc.get("content") or doc.get("article_text") or doc.get("text") or doc.get("clean_text") or doc.get("normalized_text") or doc.get("body_text"),
         "source_key": doc.get("source_key"),
-        "image_url": doc.get("image_url") or doc.get("image") or doc.get("thumbnail_url"),
+        "image_url": article_image_url(doc),
         "pipeline_status": doc.get("pipeline_status"),
         "moderation_status": doc.get("moderation_status") or "review",
         "fetched_at": fa.isoformat() if hasattr(fa, "isoformat") else fa,
@@ -97,7 +107,7 @@ def _serialize_processed(doc: dict) -> dict:
         "description": doc.get("description") or summary or doc.get("excerpt") or doc.get("clean_text") or doc.get("body_text"),
         "content": doc.get("content") or doc.get("article_text") or doc.get("text") or doc.get("clean_text") or doc.get("normalized_text") or doc.get("body_text"),
         "source_key": doc.get("source_key"),
-        "image_url": doc.get("image_url") or doc.get("image") or doc.get("thumbnail_url"),
+        "image_url": article_image_url(doc),
         "summary": summary[:500] if summary else "",
         "topic_keywords": list(doc.get("topic_keywords") or [])[:12],
         "credibility_label": doc.get("credibility_label"),
@@ -113,7 +123,7 @@ def _serialize_processed(doc: dict) -> dict:
         "fact_check_verdict": doc.get("fact_check_verdict"),
         "fact_check_hits": doc.get("fact_check_hits"),
         "fact_check_provider": doc.get("fact_check_provider"),
-        "moderation_status": doc.get("moderation_status") or "review",
+        "moderation_status": doc.get("moderation_status") or initial_moderation_status(doc),
         "processed_at": pa.isoformat() if hasattr(pa, "isoformat") else pa,
     }
 
@@ -144,6 +154,47 @@ class AdminArticlesView(APIView):
             return {"pipeline_status": ps}
         return None
 
+    @staticmethod
+    def _moderation_pending_clause() -> dict:
+        return {
+            "$or": [
+                {"moderation_status": "review"},
+                {"moderation_status": {"$exists": False}},
+                {"moderation_status": None},
+                {"moderation_status": ""},
+            ]
+        }
+
+    @staticmethod
+    def _is_needs_review_filter(moderation_status: str) -> bool:
+        return str(moderation_status or "").strip().lower() in {"review", "needs_review", "needs-review"}
+
+    @staticmethod
+    def _moderation_query(moderation_status: str) -> dict | None:
+        ms = str(moderation_status or "").strip().lower()
+        if not ms:
+            return None
+        if AdminArticlesView._is_needs_review_filter(ms):
+            return needs_review_query()
+        if ms in {"approved", "rejected"}:
+            return {"moderation_status": ms}
+        return None
+
+    @staticmethod
+    def _merge_queries(*parts: dict | None) -> dict:
+        queries = [q for q in parts if q]
+        if not queries:
+            return {}
+        if len(queries) == 1:
+            return queries[0]
+        return {"$and": queries}
+
+    @staticmethod
+    def _serialize_processed_list(docs, raw_col) -> list[dict]:
+        doc_list = list(docs)
+        hydrate_processed_image_urls(doc_list, raw_col)
+        return [_serialize_processed(doc) for doc in doc_list]
+
     def get(self, request):
         try:
             page = max(1, int(request.query_params.get("page", 1)))
@@ -157,6 +208,14 @@ class AdminArticlesView(APIView):
             or request.query_params.get("pipeline")
             or ""
         )
+        moderation_status = (
+            request.query_params.get("moderation_status")
+            or request.query_params.get("moderation")
+            or ""
+        )
+        needs_review_filter = self._is_needs_review_filter(moderation_status)
+        if needs_review_filter:
+            scope = "processed"
         skip = (page - 1) * page_size
 
         raw_col = raw_collection()
@@ -164,29 +223,91 @@ class AdminArticlesView(APIView):
         results: list[dict] = []
 
         if scope == "raw":
-            query = self._pipeline_query(pipeline_status) or {}
+            query = self._merge_queries(
+                self._pipeline_query(pipeline_status),
+                self._moderation_query(moderation_status),
+            )
             ps_lower = str(pipeline_status or "").strip().lower()
             sort_dir = 1 if ps_lower in {"queue", "pending", "processing"} else -1
             cursor = raw_col.find(query).sort("fetched_at", sort_dir).skip(skip).limit(page_size)
             for doc in cursor:
                 results.append(_serialize_raw(doc))
         elif scope == "processed":
-            for doc in proc_col.find().sort("processed_at", -1).skip(skip).limit(page_size):
-                results.append(_serialize_processed(doc))
+            query = self._moderation_query(moderation_status) or {}
+            proc_docs = list(
+                proc_col.find(query).sort("processed_at", -1).skip(skip).limit(page_size)
+            )
+            results.extend(self._serialize_processed_list(proc_docs, raw_col))
         else:
             half = max(1, page_size // 2)
-            for doc in raw_col.find().sort("fetched_at", -1).limit(half):
+            raw_query = self._merge_queries(
+                self._pipeline_query(pipeline_status),
+                self._moderation_query(moderation_status),
+            )
+            proc_query = self._moderation_query(moderation_status) or {}
+            for doc in raw_col.find(raw_query).sort("fetched_at", -1).limit(half):
                 results.append(_serialize_raw(doc))
-            for doc in proc_col.find().sort("processed_at", -1).limit(page_size - half):
-                results.append(_serialize_processed(doc))
+            proc_docs = list(
+                proc_col.find(proc_query).sort("processed_at", -1).limit(page_size - half)
+            )
+            results.extend(self._serialize_processed_list(proc_docs, raw_col))
+
+        review_query = needs_review_query()
+        if scope == "raw":
+            filtered_total = raw_col.count_documents(query)
+        elif scope == "processed":
+            filtered_total = proc_col.count_documents(query)
+        else:
+            filtered_total = raw_col.count_documents(raw_query) + proc_col.count_documents(proc_query)
+
+        count_payload = build_admin_article_counts(
+            raw_col=raw_col,
+            proc_col=proc_col,
+            filtered_total=filtered_total,
+            review_query=review_query,
+            use_unique_filtered=(
+                scope == "processed"
+                and not str(pipeline_status or "").strip()
+                and not needs_review_filter
+                and str(moderation_status or "").strip().lower() not in {"approved", "rejected"}
+            ),
+        )
+        count_payload["returned"] = len(results)
 
         return Response({
             "page": page,
             "page_size": page_size,
             "scope": scope,
             "pipeline_status": str(pipeline_status or "").strip().lower() or None,
+            "moderation_status": str(moderation_status or "").strip().lower() or None,
+            "counts": count_payload,
             "results": results,
         })
+
+
+class AdminArticleImageProxyView(APIView):
+    """Stream external article images for admin web (hotlink / CSP fallback)."""
+
+    permission_classes = [permissions.IsAuthenticated, IsAdminRole]
+
+    def get(self, request):
+        raw_url = str(request.query_params.get("url") or "").strip()
+        parsed = urlparse(raw_url)
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            return Response({"detail": "Invalid image URL."}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            req = Request(raw_url, headers={"User-Agent": "TRAK-Admin/1.0", "Accept": "image/*,*/*"})
+            with urlopen(req, timeout=12) as remote:
+                content_type = remote.headers.get("Content-Type") or "image/jpeg"
+                if not str(content_type).lower().startswith("image/"):
+                    return Response({"detail": "URL is not an image."}, status=status.HTTP_400_BAD_REQUEST)
+                body = remote.read(5_000_000)
+            response = HttpResponse(body, content_type=content_type)
+            response["Cache-Control"] = "private, max-age=3600"
+            return response
+        except Exception as exc:
+            return Response({"detail": f"Could not fetch image: {exc}"}, status=status.HTTP_502_BAD_GATEWAY)
 
 
 class AdminAnalyticsView(APIView):
@@ -215,6 +336,8 @@ class AdminArticleDetailView(APIView):
         )
         if not updated:
             return Response({"detail": "Article not found."}, status=status.HTTP_404_NOT_FOUND)
+        if scope == "processed":
+            hydrate_processed_image_urls([updated], raw_collection())
         payload = _serialize_raw(updated) if scope == "raw" else _serialize_processed(updated)
         return Response(payload, status=status.HTTP_200_OK)
 

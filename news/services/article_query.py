@@ -11,6 +11,7 @@ from news.credibility.score import (
     compute_credibility_score_from_doc,
     effective_credibility_probs,
 )
+from news.article_media import article_image_url
 from news.mongo_db import processed_collection, reactions_collection, user_keywords_collection
 from news.services.feed_cache import explore_cache_key, get_cached_explore, set_cached_explore
 
@@ -36,6 +37,7 @@ PROCESSED_FEED_PROJECTION = {
     "credibility_labels_map": 1,
     "topic_keywords": 1,
     "entities": 1,
+    "image_url": 1,
 }
 
 
@@ -150,6 +152,7 @@ def article_to_api_dict(doc: dict, *, for_list: bool = False) -> dict:
             "fact_check_sources": doc.get("fact_check_urls") or [],
         },
         "topic_keywords": doc.get("topic_keywords") or [],
+        "image_url": article_image_url(doc),
         "like_count": 0,
         "dislike_count": 0,
     }

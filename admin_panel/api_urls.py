@@ -3,6 +3,7 @@ from django.urls import path
 from . import api_views
 
 urlpatterns = [
+    path("articles/image-proxy/", api_views.AdminArticleImageProxyView.as_view(), name="admin-article-image-proxy"),
     path("articles/", api_views.AdminArticlesView.as_view(), name="admin-articles"),
     path("articles/<str:scope>/<str:article_id>/", api_views.AdminArticleDetailView.as_view(), name="admin-article-detail"),
     path("analytics/", api_views.AdminAnalyticsView.as_view(), name="admin-analytics"),
