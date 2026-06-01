@@ -430,6 +430,11 @@ MONGODB_RAW_COLLECTION = os.environ.get("MONGODB_RAW_COLLECTION", "raw_articles"
 MONGODB_PROCESSED_COLLECTION = os.environ.get("MONGODB_PROCESSED_COLLECTION", "processed_articles")
 MONGODB_USER_KEYWORDS_COLLECTION = os.environ.get("MONGODB_USER_KEYWORDS_COLLECTION", "user_keywords")
 MONGODB_CHATBOT_HISTORY_COLLECTION = os.environ.get("MONGODB_CHATBOT_HISTORY_COLLECTION", "chatbot_history")
+
+# TRAK news chatbot — Google Gemini 1.5 Flash (news-only; set key in production)
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "").strip() or None
+GEMINI_CHATBOT_MODEL = os.environ.get("GEMINI_CHATBOT_MODEL", "gemini-1.5-flash").strip() or "gemini-1.5-flash"
+GEMINI_CHATBOT_TIMEOUT = float(os.environ.get("GEMINI_CHATBOT_TIMEOUT", "45"))
 MONGODB_NOTIFICATIONS_COLLECTION = os.environ.get("MONGODB_NOTIFICATIONS_COLLECTION", "notifications")
 MONGODB_DEVICE_TOKENS_COLLECTION = os.environ.get("MONGODB_DEVICE_TOKENS_COLLECTION", "device_tokens")
 MONGODB_USER_PREFERENCES_COLLECTION = os.environ.get("MONGODB_USER_PREFERENCES_COLLECTION", "user_preferences")

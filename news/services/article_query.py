@@ -11,8 +11,8 @@ from news.credibility.score import (
     compute_credibility_score_from_doc,
     effective_credibility_probs,
 )
-from news.article_media import article_image_url
-from news.mongo_db import processed_collection, reactions_collection, user_keywords_collection
+from news.article_media import article_image_url, hydrate_processed_image_urls
+from news.mongo_db import processed_collection, raw_collection, reactions_collection, user_keywords_collection
 from news.services.feed_cache import explore_cache_key, get_cached_explore, set_cached_explore
 
 User = get_user_model()
@@ -44,6 +44,12 @@ PROCESSED_FEED_PROJECTION = {
 def _oid_str(doc: dict) -> str:
     _id = doc.get("_id")
     return str(_id) if _id is not None else ""
+
+
+def _hydrate_docs_images(docs: list[dict]) -> None:
+    """Fill image_url on processed docs from raw_articles when missing (same as admin list)."""
+    if docs:
+        hydrate_processed_image_urls(docs, raw_collection())
 
 
 def _normalize_keywords(user: User) -> list[str]:
@@ -271,6 +277,8 @@ def get_user_feed_page(
         if not docs:
             break
 
+        _hydrate_docs_images(docs)
+
         for doc in docs:
             last_seen_doc = doc
             if not _matches_feed_filters(doc, keywords, q):
@@ -327,6 +335,7 @@ def get_article_by_id(article_id: str, user: User) -> Optional[dict]:
         doc = proc.find_one({"canonical_url": article_id})
     if doc is None:
         return None
+    _hydrate_docs_images([doc])
     item = article_to_api_dict(doc, for_list=False)
     hydrate_article_reaction_counts([item])
     return item
@@ -356,6 +365,82 @@ def upsert_user_keywords(user: User, keywords: list[str]) -> dict[str, Any]:
 def get_explore_feed(limit: int = 50, *, search_q: str = "") -> list[dict]:
     page = get_explore_feed_page(limit=limit, search_q=search_q, cursor=None)
     return page["results"]
+
+
+def search_processed_articles(search_q: str, *, limit: int = 10) -> list[dict]:
+    """
+    Search processed_articles in MongoDB for chatbot / in-app lookup.
+    Returns API-shaped article dicts sorted by relevance to the query.
+    """
+    q = (search_q or "").strip()
+    if not q:
+        return []
+
+    proc = processed_collection()
+    words = [w for w in re.findall(r"[a-z0-9]+", q.lower()) if len(w) >= 2][:8]
+    or_clauses: list[dict] = list(_search_filter_clause(q).get("$or") or [])
+    for word in words:
+        escaped = re.escape(word)
+        or_clauses.extend(
+            [
+                {"title": {"$regex": escaped, "$options": "i"}},
+                {"summary": {"$regex": escaped, "$options": "i"}},
+                {"topic_keywords": {"$regex": escaped, "$options": "i"}},
+            ]
+        )
+    if not or_clauses:
+        return []
+
+    docs = list(
+        proc.find({"$or": or_clauses}, PROCESSED_FEED_PROJECTION)
+        .sort("processed_at", -1)
+        .limit(max(limit * 4, 24))
+    )
+    if not docs:
+        return []
+
+    _hydrate_docs_images(docs)
+    q_lower = q.lower()
+    word_set = set(words)
+
+    def _score(doc: dict) -> float:
+        hay = _doc_haystack(doc)
+        score = 0.0
+        title = str(doc.get("title") or "").lower()
+        if q_lower in title:
+            score += 8.0
+        if q_lower in hay:
+            score += 4.0
+        for w in word_set:
+            if w in title:
+                score += 2.0
+            elif w in hay:
+                score += 1.0
+        dt = doc.get("processed_at")
+        if isinstance(dt, datetime):
+            age_h = max(0.0, (datetime.now(timezone.utc) - (
+                dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+            )).total_seconds() / 3600.0)
+            score += 1.0 / (1.0 + age_h / 24.0)
+        return score
+
+    ranked = sorted(docs, key=_score, reverse=True)
+    return [article_to_api_dict(d, for_list=True) for d in ranked[:limit]]
+
+
+def get_recent_processed_articles(*, limit: int = 10) -> list[dict]:
+    """Latest articles from processed_articles for headline-style chatbot queries."""
+    page_size = max(1, min(int(limit or 10), 30))
+    docs = list(
+        processed_collection()
+        .find({}, PROCESSED_FEED_PROJECTION)
+        .sort("processed_at", -1)
+        .limit(page_size)
+    )
+    if not docs:
+        return []
+    _hydrate_docs_images(docs)
+    return [article_to_api_dict(d, for_list=True) for d in docs]
 
 
 def _cursor_payload_from_doc(doc: dict) -> Optional[str]:
@@ -464,6 +549,8 @@ def get_explore_feed_page(
         if not docs:
             break
 
+        _hydrate_docs_images(docs)
+
         if not q:
             ranked_batch = _rank_for_diversity(docs[:page_size], now, take=page_size)
             for doc in ranked_batch:
@@ -478,6 +565,8 @@ def get_explore_feed_page(
             if q not in hay:
                 continue
             filtered.append(doc)
+
+        _hydrate_docs_images(filtered)
 
         ranked_batch = _rank_for_diversity(filtered, now, take=page_size - len(out))
         for doc in ranked_batch:

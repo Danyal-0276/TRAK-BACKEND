@@ -20,6 +20,26 @@ from news.mongo_db import (
     user_preferences_collection,
 )
 from news import feedback_service
+from news.chatbot import (
+    ChatbotAPIError,
+    ChatbotConfigError,
+    fallback_reply,
+    gather_news_context,
+    generate_chatbot_reply,
+    finalize_reply_with_article_cards,
+    generate_identity_reply,
+    generate_no_match_reply,
+    generate_off_topic_reply,
+    get_identity_reply,
+    get_no_match_reply,
+    get_off_topic_reply,
+    has_strong_article_match,
+    is_chatbot_configured,
+    pick_primary_article,
+    sanitize_bot_reply,
+    serialize_chat_article,
+)
+from news.chatbot.intents import detect_intent, has_news_intent, is_off_topic_message
 from news.feedback_constants import FEEDBACK_CATEGORIES
 
 
@@ -336,65 +356,209 @@ class ChatbotView(APIView):
         if not message:
             return Response({"detail": "message is required"}, status=status.HTTP_400_BAD_REQUEST)
 
-        feed = article_query.get_user_feed(request.user, limit=5, search_q=message)
-        if feed:
-            top = feed[0]
-            extra_titles = [a.get("title") for a in feed[1:3] if a.get("title")]
-            suggestions = ""
-            if extra_titles:
-                suggestions = "\n\nYou can also check:\n- " + "\n- ".join(extra_titles)
+        history_row = chatbot_history_collection().find_one({"user_id": request.user.pk}) or {}
+        prior_messages = history_row.get("messages") or []
+
+        if is_off_topic_message(message):
+            try:
+                reply = (
+                    generate_off_topic_reply(message, prior_messages)
+                    if is_chatbot_configured()
+                    else get_off_topic_reply()
+                )
+            except ChatbotAPIError:
+                reply = get_off_topic_reply()
             payload = {
-                "reply": (
-                    f"Best match: {top.get('title')}.\n"
-                    f"Source: {top.get('source') or 'unknown'}.\n"
-                    "Open the article card for full details."
-                    f"{suggestions}"
-                ),
-                "articles": feed,
+                "reply": sanitize_bot_reply(reply),
+                "articles": [],
+                "primary_article": None,
+                "has_trak_article": False,
+                "intent": "off_topic",
+                "powered_by": "gemini" if is_chatbot_configured() else "local",
             }
-            _append_chatbot_history(request.user.pk, message, payload["reply"], payload.get("articles") or [])
+            _append_chatbot_history(request.user.pk, message, payload["reply"], None)
             return Response(payload)
 
-        recent_processed = list(
-            processed_collection()
-            .find({}, {"title": 1})
-            .sort("processed_at", -1)
-            .limit(3)
-        )
-        if recent_processed:
-            titles = [
-                str(a.get("title") or "Untitled").strip()
-                for a in recent_processed
-                if a.get("title")
-            ]
+        ctx_limit = 8 if detect_intent(message) != "summarize" else 6
+        articles, intent = gather_news_context(request.user, message, limit=ctx_limit)
+        primary = pick_primary_article(message, articles)
+        if intent == "headlines" and articles and not primary:
+            primary = articles[0]
+        db_match = has_strong_article_match(message, primary)
+
+        if intent == "identity":
+            try:
+                reply = (
+                    generate_identity_reply(message, prior_messages)
+                    if is_chatbot_configured()
+                    else get_identity_reply()
+                )
+            except ChatbotAPIError:
+                reply = get_identity_reply()
             payload = {
-                "reply": "I could not find an exact match, but here are recent headlines.",
-                "headlines": titles,
+                "reply": sanitize_bot_reply(reply),
+                "articles": [],
+                "primary_article": None,
+                "has_trak_article": False,
+                "intent": intent,
+                "powered_by": "gemini" if is_chatbot_configured() else "local",
             }
-            _append_chatbot_history(request.user.pk, message, payload["reply"], [])
+            _append_chatbot_history(request.user.pk, message, payload["reply"], None)
             return Response(payload)
+
+        if intent == "off_topic":
+            try:
+                reply = (
+                    generate_off_topic_reply(message, prior_messages)
+                    if is_chatbot_configured()
+                    else get_off_topic_reply()
+                )
+            except ChatbotAPIError:
+                reply = get_off_topic_reply()
+            payload = {
+                "reply": sanitize_bot_reply(reply),
+                "articles": [],
+                "primary_article": None,
+                "has_trak_article": False,
+                "intent": intent,
+                "powered_by": "gemini" if is_chatbot_configured() else "local",
+            }
+            _append_chatbot_history(request.user.pk, message, payload["reply"], None)
+            return Response(payload)
+
+        if intent in ("no_match", "off_topic") or not articles:
+            is_off = intent == "off_topic" or not has_news_intent(message)
+            try:
+                if is_off:
+                    reply = (
+                        generate_off_topic_reply(message, prior_messages)
+                        if is_chatbot_configured()
+                        else get_off_topic_reply()
+                    )
+                else:
+                    reply = (
+                        generate_no_match_reply(message, prior_messages)
+                        if is_chatbot_configured()
+                        else get_no_match_reply()
+                    )
+            except ChatbotAPIError:
+                reply = get_off_topic_reply() if is_off else get_no_match_reply()
+            resolved_intent = "off_topic" if is_off else "no_match"
+            payload = {
+                "reply": sanitize_bot_reply(reply),
+                "articles": [],
+                "primary_article": None,
+                "has_trak_article": False,
+                "intent": resolved_intent,
+                "powered_by": "gemini" if is_chatbot_configured() else "local",
+            }
+            _append_chatbot_history(request.user.pk, message, payload["reply"], None)
+            return Response(payload)
+
+        if not articles and not is_chatbot_configured():
+            payload = {
+                "reply": "No news data found yet. Run the scraper and then refresh the feed.",
+                "articles": [],
+                "primary_article": None,
+                "has_trak_article": False,
+            }
+            _append_chatbot_history(request.user.pk, message, payload["reply"], None)
+            return Response(payload)
+
+        reply = ""
+        if is_chatbot_configured():
+            try:
+                reply = generate_chatbot_reply(
+                    message,
+                    articles,
+                    prior_messages,
+                    intent=intent,
+                    has_db_match=db_match,
+                )
+            except ChatbotConfigError:
+                reply = fallback_reply(message, articles, primary=primary, intent=intent)
+            except ChatbotAPIError as exc:
+                return Response(
+                    {"detail": f"TRAK AI is temporarily unavailable: {exc}"},
+                    status=status.HTTP_502_BAD_GATEWAY,
+                )
+        else:
+            reply = fallback_reply(message, articles, primary=primary, intent=intent)
+
+        if intent == "summarize" and articles:
+            primary = primary or articles[0]
+            db_match = True
+
+        serialized = [serialize_chat_article(a) for a in articles[:5]]
+        serialized = [a for a in serialized if a]
+        primary_payload = serialize_chat_article(primary) if db_match else None
+
+        if intent in ("headlines", "summarize"):
+            linkable = serialized[:5] if intent == "summarize" else serialized[:3]
+        else:
+            linkable = []
+            for art in articles[:3]:
+                if has_strong_article_match(message, art):
+                    row = serialize_chat_article(art)
+                    if row:
+                        linkable.append(row)
+
+        reply = sanitize_bot_reply(reply)
+        if intent == "summarize" and articles:
+            reply = finalize_reply_with_article_cards(
+                reply,
+                linkable,
+                intent=intent,
+                source_articles=articles,
+            )
+        elif linkable:
+            reply = finalize_reply_with_article_cards(
+                reply,
+                linkable,
+                intent=intent,
+            )
 
         payload = {
-            "reply": "No news data found yet. Run the scraper and then refresh the feed.",
-            "articles": [],
+            "reply": reply,
+            "articles": serialized,
+            "primary_article": primary_payload,
+            "related_articles": linkable,
+            "has_trak_article": bool(primary_payload or linkable),
+            "intent": intent,
+            "powered_by": "gemini" if is_chatbot_configured() else "local",
         }
-        _append_chatbot_history(request.user.pk, message, payload["reply"], [])
+        _append_chatbot_history(
+            request.user.pk,
+            message,
+            payload["reply"],
+            primary_payload,
+            related=serialized,
+        )
         return Response(payload)
 
 
-def _append_chatbot_history(user_id: int, user_text: str, bot_text: str, articles: list[dict]) -> None:
+def _append_chatbot_history(
+    user_id: int,
+    user_text: str,
+    bot_text: str,
+    primary_article: dict | None,
+    *,
+    related: list[dict] | None = None,
+) -> None:
     col = chatbot_history_collection()
     row = col.find_one({"user_id": user_id}) or {"user_id": user_id, "messages": []}
     messages = row.get("messages") or []
     messages.append({"role": "user", "text": user_text})
-    top = articles[0] if articles else {}
+    top = primary_article or {}
     messages.append(
         {
             "role": "bot",
             "text": bot_text,
+            "article_id": top.get("id"),
             "article_title": top.get("title"),
-            "article_url": top.get("canonical_url"),
+            "article_path": top.get("trak_path"),
             "source": top.get("source"),
+            "related_articles": related or [],
         }
     )
     # Keep only latest 50 chat messages (25 exchanges)
