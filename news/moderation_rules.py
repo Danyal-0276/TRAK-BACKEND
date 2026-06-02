@@ -116,3 +116,13 @@ def doc_needs_review(doc: dict[str, Any] | None) -> bool:
     if ms in {"approved", "rejected"}:
         return False
     return is_fake_or_suspicious_label(doc) and fact_check_ran(doc)
+
+
+def article_visible_to_users(doc: dict[str, Any] | None) -> bool:
+    """True when the article may appear in user feeds and keyword alerts."""
+    if not doc:
+        return False
+    ms = str(doc.get("moderation_status") or "").strip().lower()
+    if ms in {"rejected", "review"}:
+        return False
+    return True

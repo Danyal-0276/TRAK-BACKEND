@@ -34,6 +34,12 @@ class Command(BaseCommand):
             default=25,
             help="Max new articles to store per source (default 25).",
         )
+        parser.add_argument(
+            "--total-limit",
+            type=int,
+            default=None,
+            help="Stop after this many new inserts across all sources (optional).",
+        )
 
     def handle(self, *args, **options):
         storage.ensure_indexes()
@@ -41,15 +47,36 @@ class Command(BaseCommand):
         try:
             names = options["sources"]
             limit = max(1, options["limit"])
+            total_limit = options.get("total_limit")
+            remaining = int(total_limit) if total_limit is not None else None
 
             self.stdout.write(
                 "Using robots.txt checks + delay between requests. "
                 "Set SCRAPER_USER_AGENT to a reachable contact if you deploy."
             )
+            if remaining is not None:
+                self.stdout.write(
+                    self.style.NOTICE(f"Total insert cap: {remaining} across {len(names)} source(s).")
+                )
 
             for name in names:
+                if remaining is not None and remaining <= 0:
+                    self.stdout.write(
+                        self.style.WARNING(
+                            f"Total limit reached; skipping remaining sources ({name} and later)."
+                        )
+                    )
+                    break
                 mod = SOURCE_MODULES[name]
-                stats = mod.run(client, limit=limit)
+                per_source = min(limit, max(1, remaining)) if remaining is not None else limit
+                stats = mod.run(client, limit=per_source)
+                inserted = int(stats.get("inserted") or 0)
+                if remaining is not None:
+                    remaining -= inserted
                 self.stdout.write(self.style.SUCCESS(str(stats)))
         finally:
             client.close()
+
+        from news.pipeline.auto_runner import schedule_immediate_drain
+
+        schedule_immediate_drain()

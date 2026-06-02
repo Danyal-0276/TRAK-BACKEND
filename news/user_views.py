@@ -85,6 +85,22 @@ class ExploreFeedView(APIView):
         return Response(page)
 
 
+class PicsFeedView(APIView):
+    """Image-first article feed for the Pics browse experience."""
+
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        try:
+            limit = min(int(request.query_params.get("limit", 30)), 200)
+        except ValueError:
+            limit = 30
+        q = (request.query_params.get("q") or "").strip()
+        cursor = (request.query_params.get("cursor") or "").strip() or None
+        page = article_query.get_pics_feed_page(limit=limit, search_q=q, cursor=cursor)
+        return Response(page)
+
+
 class UserBootstrapView(APIView):
     """Single round-trip for home: keywords, feed page, bookmarks, reactions."""
 
@@ -170,6 +186,14 @@ class TrackKeywordsView(APIView):
             return Response({"detail": "keywords must be a list"}, status=status.HTTP_400_BAD_REQUEST)
         try:
             payload = article_query.upsert_user_keywords(request.user, keywords)
+            try:
+                from news.notifications.keyword_alerts import notify_keyword_matches_for_user_recent
+
+                notify_keyword_matches_for_user_recent(
+                    request.user, hours=168, limit=200
+                )
+            except Exception:
+                pass
             return Response(payload, status=status.HTTP_200_OK)
         except Exception as exc:
             return Response(

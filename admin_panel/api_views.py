@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import json
 from datetime import datetime, timezone
+from io import StringIO
 from pathlib import Path
 from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 
 from bson import ObjectId
+from django.core.management import call_command
 from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.http import HttpResponse
@@ -126,6 +128,31 @@ def _serialize_processed(doc: dict) -> dict:
         "fact_check_provider": doc.get("fact_check_provider"),
         "moderation_status": doc.get("moderation_status") or initial_moderation_status(doc),
         "processed_at": pa.isoformat() if hasattr(pa, "isoformat") else pa,
+    }
+
+
+def _pipeline_snapshot() -> dict:
+    raw_col = raw_collection()
+    proc_col = processed_collection()
+    return {
+        "raw_total": raw_col.count_documents({}),
+        "raw_pending": raw_col.count_documents({"pipeline_status": "pending"}),
+        "raw_processing": raw_col.count_documents({"pipeline_status": "processing"}),
+        "raw_failed": raw_col.count_documents({"pipeline_status": "failed"}),
+        "raw_done": raw_col.count_documents({"pipeline_status": "done"}),
+        "processed_total": proc_col.count_documents({}),
+    }
+
+
+def _run_command_capture(name: str, **kwargs) -> dict:
+    out = StringIO()
+    err = StringIO()
+    call_command(name, stdout=out, stderr=err, **kwargs)
+    stdout = out.getvalue().strip()
+    stderr = err.getvalue().strip()
+    return {
+        "stdout": stdout[-4000:] if stdout else "",
+        "stderr": stderr[-4000:] if stderr else "",
     }
 
 
@@ -352,6 +379,13 @@ class AdminArticleDetailView(APIView):
             return Response({"detail": "Article not found."}, status=status.HTTP_404_NOT_FOUND)
         if scope == "processed":
             hydrate_processed_image_urls([updated], raw_collection())
+            if moderation_status == "approved":
+                try:
+                    from news.notifications.keyword_alerts import notify_keyword_matches_for_article
+
+                    notify_keyword_matches_for_article(updated)
+                except Exception:
+                    pass
         payload = _serialize_raw(updated) if scope == "raw" else _serialize_processed(updated)
         return Response(payload, status=status.HTTP_200_OK)
 
@@ -391,21 +425,43 @@ class AdminArticleLookupView(APIView):
         return Response({"detail": "Article not found."}, status=status.HTTP_404_NOT_FOUND)
 
 
+def _parse_drain_queue_flag(value, *, default: bool = True) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in {"true", "1", "yes", "on"}
+    return default
+
+
 class AdminPipelineRunView(APIView):
     permission_classes = [permissions.IsAuthenticated, IsAdminRole]
 
     def post(self, request):
         try:
-            limit = min(500, max(1, int(request.data.get("limit", 10))))
+            batch_size = min(500, max(1, int(request.data.get("limit", 10))))
         except (TypeError, ValueError):
-            limit = 10
+            batch_size = 10
+        drain_queue = _parse_drain_queue_flag(request.data.get("drain_queue"), default=True)
+        workers = max(1, min(8, int(getattr(settings, "PIPELINE_WORKERS", 1))))
         try:
             orchestrator.heal_stuck_raw_pipeline(
                 stale_minutes=getattr(settings, "PIPELINE_STALE_MINUTES", 30)
             )
         except Exception:
             pass
-        result = orchestrator.run_batch(limit=limit, workers=1)
+        before = _pipeline_snapshot()
+        if drain_queue:
+            result = orchestrator.run_until_empty(batch_size=batch_size, workers=workers)
+        else:
+            result = orchestrator.run_batch(limit=batch_size, workers=workers)
+        after = _pipeline_snapshot()
+        result = {
+            **result,
+            "drain_queue": drain_queue,
+            "batch_size": batch_size,
+            "before": before,
+            "after": after,
+        }
         try:
             from notifications.admin_alerts import notify_admin_pipeline_batch
 
@@ -415,7 +471,112 @@ class AdminPipelineRunView(APIView):
             )
         except Exception:
             pass
+        try:
+            from news.notifications.keyword_alerts import notify_keyword_matches_for_recent_articles
+
+            result["keyword_notifications_sent"] = notify_keyword_matches_for_recent_articles(
+                hours=168, limit=200
+            )
+        except Exception:
+            result["keyword_notifications_sent"] = 0
         return Response(result, status=status.HTTP_200_OK)
+
+
+class AdminScrapeRunView(APIView):
+    permission_classes = [permissions.IsAuthenticated, IsAdminRole]
+
+    def post(self, request):
+        try:
+            scrape_limit = min(200, max(1, int(request.data.get("limit", 40))))
+        except (TypeError, ValueError):
+            scrape_limit = 40
+
+        before = _pipeline_snapshot()
+        logs = _run_command_capture(
+            "run_news_cycle",
+            skip_pipeline=True,
+            scrape_limit=scrape_limit,
+            total_limit=scrape_limit,
+        )
+        after = _pipeline_snapshot()
+        try:
+            from news.pipeline.auto_runner import schedule_immediate_drain
+
+            schedule_immediate_drain()
+        except Exception:
+            pass
+        return Response(
+            {
+                "mode": "scrape_only",
+                "scrape_limit": scrape_limit,
+                "total_limit": scrape_limit,
+                "before": before,
+                "after": after,
+                "delta": {
+                    "raw_total": after["raw_total"] - before["raw_total"],
+                    "pending": after["raw_pending"] - before["raw_pending"],
+                    "processed_total": after["processed_total"] - before["processed_total"],
+                },
+                "logs": logs,
+            },
+            status=status.HTTP_200_OK,
+        )
+
+
+class AdminScrapeAndPipelineRunView(APIView):
+    permission_classes = [permissions.IsAuthenticated, IsAdminRole]
+
+    def post(self, request):
+        try:
+            scrape_limit = min(200, max(1, int(request.data.get("scrape_limit", 40))))
+        except (TypeError, ValueError):
+            scrape_limit = 40
+        try:
+            pipeline_limit = min(1000, max(1, int(request.data.get("pipeline_limit", 200))))
+        except (TypeError, ValueError):
+            pipeline_limit = 200
+
+        workers = max(1, min(8, int(getattr(settings, "PIPELINE_WORKERS", 1))))
+        before = _pipeline_snapshot()
+        logs = _run_command_capture(
+            "run_news_cycle",
+            skip_pipeline=True,
+            scrape_limit=scrape_limit,
+            total_limit=scrape_limit,
+        )
+        mid = _pipeline_snapshot()
+        try:
+            orchestrator.heal_stuck_raw_pipeline(
+                stale_minutes=getattr(settings, "PIPELINE_STALE_MINUTES", 30)
+            )
+        except Exception:
+            pass
+        pipeline_result = orchestrator.run_until_empty(
+            batch_size=min(pipeline_limit, 500),
+            workers=workers,
+        )
+        after = _pipeline_snapshot()
+        return Response(
+            {
+                "mode": "scrape_and_pipeline",
+                "scrape_limit": scrape_limit,
+                "total_limit": scrape_limit,
+                "pipeline_limit": pipeline_limit,
+                "before": before,
+                "after": after,
+                "mid": mid,
+                "pipeline": pipeline_result,
+                "processed_ok": pipeline_result.get("processed_ok", 0),
+                "errors": pipeline_result.get("errors", 0),
+                "delta": {
+                    "raw_total": after["raw_total"] - before["raw_total"],
+                    "pending": after["raw_pending"] - before["raw_pending"],
+                    "processed_total": after["processed_total"] - before["processed_total"],
+                },
+                "logs": logs,
+            },
+            status=status.HTTP_200_OK,
+        )
 
 
 class AdminModelMetricsView(APIView):

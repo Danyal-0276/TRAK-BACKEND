@@ -96,6 +96,7 @@ def _pipeline_summary(pipeline_counts: dict[str, int], raw_total: int, *, raw_co
     finished = done + failed
     completion_pct = round(100.0 * done / max(1, raw_total), 1) if raw_total else 0.0
     success_pct = round(100.0 * done / max(1, finished), 1) if finished else 0.0
+    pipeline_workers = max(1, min(8, int(getattr(settings, "PIPELINE_WORKERS", 1))))
     return {
         "pending": pending,
         "processing": processing,
@@ -105,6 +106,7 @@ def _pipeline_summary(pipeline_counts: dict[str, int], raw_total: int, *, raw_co
         "stale_processing": stale_processing,
         "active_processing": active_processing,
         "queued": queued,
+        "pipeline_workers": pipeline_workers,
         "completion_pct": completion_pct,
         "success_pct": success_pct,
     }

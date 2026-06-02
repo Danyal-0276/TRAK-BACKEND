@@ -480,7 +480,17 @@ def verify_claim(
         tasks.append((name, query, fn))
 
     results: list[dict[str, Any]] = []
-    parallel = getattr(settings, "FACT_CHECKER_PARALLEL", True) and len(tasks) > 1
+    try:
+        from news.pipeline.worker_context import pipeline_worker_active
+
+        in_pipeline_worker = pipeline_worker_active.get()
+    except Exception:
+        in_pipeline_worker = False
+    parallel = (
+        getattr(settings, "FACT_CHECKER_PARALLEL", True)
+        and len(tasks) > 1
+        and not in_pipeline_worker
+    )
     if parallel:
         from concurrent.futures import ThreadPoolExecutor, as_completed
 

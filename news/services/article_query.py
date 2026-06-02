@@ -12,6 +12,8 @@ from news.credibility.score import (
     effective_credibility_probs,
 )
 from news.article_media import article_image_url, hydrate_processed_image_urls
+from news.category_matching import interest_matches_hay, user_follows_all_categories
+from news.moderation_rules import article_visible_to_users
 from news.mongo_db import processed_collection, raw_collection, reactions_collection, user_keywords_collection
 from news.services.feed_cache import explore_cache_key, get_cached_explore, set_cached_explore
 
@@ -80,11 +82,7 @@ def _doc_haystack(doc: dict) -> str:
 
 
 def _keyword_matches_hay(keyword: str, hay: str) -> bool:
-    k = str(keyword or "").strip().lower()
-    if len(k) < 2:
-        return False
-    variants = {k, k.replace(" ", "-"), k.replace("-", " ")}
-    return any(len(v) >= 2 and v in hay for v in variants)
+    return interest_matches_hay(keyword, hay)
 
 
 def _matches_feed_filters(
@@ -92,9 +90,12 @@ def _matches_feed_filters(
     user_keywords: list[str],
     search_q: str,
 ) -> bool:
-    hay = _doc_haystack(doc)
-    if user_keywords and not any(_keyword_matches_hay(k, hay) for k in user_keywords):
+    if not article_visible_to_users(doc):
         return False
+    hay = _doc_haystack(doc)
+    if user_keywords and not user_follows_all_categories(user_keywords):
+        if not any(_keyword_matches_hay(k, hay) for k in user_keywords):
+            return False
     q = (search_q or "").strip().lower()
     if q and q not in hay:
         return False
@@ -333,7 +334,7 @@ def get_article_by_id(article_id: str, user: User) -> Optional[dict]:
         doc = proc.find_one({"_id": ObjectId(article_id)})
     if doc is None:
         doc = proc.find_one({"canonical_url": article_id})
-    if doc is None:
+    if doc is None or not article_visible_to_users(doc):
         return None
     _hydrate_docs_images([doc])
     item = article_to_api_dict(doc, for_list=False)
@@ -400,6 +401,9 @@ def search_processed_articles(search_q: str, *, limit: int = 10) -> list[dict]:
         return []
 
     _hydrate_docs_images(docs)
+    docs = [d for d in docs if article_visible_to_users(d)]
+    if not docs:
+        return []
     q_lower = q.lower()
     word_set = set(words)
 
@@ -440,6 +444,7 @@ def get_recent_processed_articles(*, limit: int = 10) -> list[dict]:
     if not docs:
         return []
     _hydrate_docs_images(docs)
+    docs = [d for d in docs if article_visible_to_users(d)]
     return [article_to_api_dict(d, for_list=True) for d in docs]
 
 
@@ -515,6 +520,92 @@ def _rank_for_diversity(docs: list[dict], now: datetime, take: int) -> list[dict
     return chosen
 
 
+def _doc_has_display_image(doc: dict) -> bool:
+    return bool(article_image_url(doc))
+
+
+def get_pics_feed(
+    limit: int = 50,
+    *,
+    search_q: str = "",
+) -> list[dict]:
+    page = get_pics_feed_page(limit=limit, search_q=search_q, cursor=None)
+    return page["results"]
+
+
+def get_pics_feed_page(
+    *,
+    limit: int = 30,
+    search_q: str = "",
+    cursor: Optional[str] = None,
+) -> dict[str, Any]:
+    """Cursor-based feed of articles with hero images (for Pics / visual browse)."""
+    q = (search_q or "").strip().lower()
+    page_size = max(1, min(int(limit or 30), 200))
+    proc = processed_collection()
+    batch_size = max(page_size * 5, 100)
+    query = _merge_query(_query_after_cursor(cursor or ""), _search_filter_clause(q))
+
+    out: list[dict] = []
+    last_seen_doc: Optional[dict] = None
+    now = datetime.now(timezone.utc)
+    last_batch_len = 0
+
+    while len(out) < page_size:
+        fetched = list(
+            proc.find(query, PROCESSED_FEED_PROJECTION)
+            .sort([("processed_at", -1), ("_id", -1)])
+            .limit(batch_size)
+        )
+        last_batch_len = len(fetched)
+        if not fetched:
+            break
+
+        _hydrate_docs_images(fetched)
+        docs = [d for d in fetched if article_visible_to_users(d) and _doc_has_display_image(d)]
+        last_seen_doc = fetched[-1]
+
+        if not q:
+            ranked_batch = _rank_for_diversity(docs, now, take=page_size - len(out))
+            for doc in ranked_batch:
+                out.append(article_to_api_dict(doc, for_list=True))
+                if len(out) >= page_size:
+                    break
+            if len(out) >= page_size or last_batch_len < batch_size:
+                break
+            next_scan_cursor = _cursor_payload_from_doc(fetched[-1])
+            if not next_scan_cursor:
+                break
+            query = _merge_query(_query_after_cursor(next_scan_cursor), _search_filter_clause(q))
+            continue
+
+        filtered: list[dict] = []
+        for doc in docs:
+            hay = _doc_haystack(doc)
+            if q not in hay:
+                continue
+            filtered.append(doc)
+
+        ranked_batch = _rank_for_diversity(filtered, now, take=page_size - len(out))
+        for doc in ranked_batch:
+            out.append(article_to_api_dict(doc, for_list=True))
+            if len(out) >= page_size:
+                break
+
+        if len(out) >= page_size:
+            break
+
+        next_scan_cursor = _cursor_payload_from_doc(fetched[-1])
+        if not next_scan_cursor:
+            break
+        query = _merge_query(_query_after_cursor(next_scan_cursor), _search_filter_clause(q))
+
+    next_cursor = _cursor_payload_from_doc(last_seen_doc or {})
+    has_more = bool(next_cursor and last_batch_len >= batch_size)
+    hydrate_article_reaction_counts(out)
+    return {"results": out, "next_cursor": next_cursor if has_more else None, "has_more": has_more}
+
+
 def get_explore_feed_page(
     *,
     limit: int = 30,
@@ -550,6 +641,7 @@ def get_explore_feed_page(
             break
 
         _hydrate_docs_images(docs)
+        docs = [d for d in docs if article_visible_to_users(d)]
 
         if not q:
             ranked_batch = _rank_for_diversity(docs[:page_size], now, take=page_size)
@@ -561,6 +653,8 @@ def get_explore_feed_page(
         filtered: list[dict] = []
         for doc in docs:
             last_seen_doc = doc
+            if not article_visible_to_users(doc):
+                continue
             hay = _doc_haystack(doc)
             if q not in hay:
                 continue

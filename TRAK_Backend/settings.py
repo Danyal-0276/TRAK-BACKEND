@@ -479,6 +479,21 @@ FACT_CHECKER_PARALLEL = os.environ.get("FACT_CHECKER_PARALLEL", "true").strip().
 # AI pipeline parallelism (CLI / cron / systemd — not Admin HTTP)
 PIPELINE_WORKERS = max(1, min(8, int(os.environ.get("PIPELINE_WORKERS", "1"))))
 PIPELINE_STALE_MINUTES = max(5, int(os.environ.get("PIPELINE_STALE_MINUTES", "30")))
+# Background drain of pending raw_articles while Django is running (see news/pipeline/auto_runner.py).
+PIPELINE_AUTO_ENABLED = os.environ.get("PIPELINE_AUTO_ENABLED", "true").strip().lower() in (
+    "true",
+    "1",
+    "yes",
+    "on",
+)
+PIPELINE_AUTO_INTERVAL_SECONDS = max(
+    30, int(os.environ.get("PIPELINE_AUTO_INTERVAL_SECONDS", "90"))
+)
+PIPELINE_AUTO_BATCH_SIZE = max(1, min(500, int(os.environ.get("PIPELINE_AUTO_BATCH_SIZE", "50"))))
+PIPELINE_AUTO_MIN_PENDING = max(1, int(os.environ.get("PIPELINE_AUTO_MIN_PENDING", "1")))
+PIPELINE_AUTO_LOCK_TTL_SECONDS = max(
+    300, int(os.environ.get("PIPELINE_AUTO_LOCK_TTL_SECONDS", "7200"))
+)
 
 # BART news summarizer (HF Space preferred; Hub id is fallback when SUMMARIZER_SPACE_ID unset)
 SUMMARIZER_MODEL_ID = os.environ.get("SUMMARIZER_MODEL_ID", "daniB2112/bart-news-summarizer").strip()

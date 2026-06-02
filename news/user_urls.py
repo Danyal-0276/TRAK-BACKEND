@@ -7,6 +7,7 @@ urlpatterns = [
     path("articles/image-proxy/", ArticleImageProxyView.as_view(), name="user-article-image-proxy"),
     path("feed/", user_views.UserFeedView.as_view(), name="user-feed"),
     path("explore/", user_views.ExploreFeedView.as_view(), name="user-explore"),
+    path("pics/", user_views.PicsFeedView.as_view(), name="user-pics"),
     path("bootstrap/", user_views.UserBootstrapView.as_view(), name="user-bootstrap"),
     path("platform-categories/", user_views.PlatformCategoriesView.as_view(), name="user-platform-categories"),
     path("keywords/", user_views.UserKeywordsView.as_view(), name="user-keywords"),

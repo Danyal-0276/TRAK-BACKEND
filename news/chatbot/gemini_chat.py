@@ -290,17 +290,20 @@ def build_local_summary_paragraph(articles: list[dict], *, max_chars: int = 650)
     sentences: list[str] = []
     for art in articles[:4]:
         summary = str(art.get("summary") or art.get("excerpt") or "").strip()
+        title = str(art.get("title") or "").strip()
+        if summary and title and _normalize_text(summary) == _normalize_text(title):
+            summary = ""
         if summary:
             first = re.split(r"(?<=[.!?])\s+", summary)[0].strip()
             if first and first not in sentences:
                 sentences.append(first.rstrip(".") + ".")
             continue
-        title = str(art.get("title") or "").strip()
-        if title:
-            sentences.append(f"Coverage includes {title.rstrip('.')}.")
 
     if not sentences:
-        return "These stories are available in TRAK — open the cards below for full details."
+        return (
+            "TRAK has several stories on this topic. "
+            "See the article cards below for full coverage."
+        )
 
     paragraph = " ".join(sentences)
     if len(paragraph) > max_chars:
@@ -347,12 +350,68 @@ def _normalize_text(text: str) -> str:
     return re.sub(r"\s+", " ", (text or "").strip().lower())
 
 
-def _is_card_intro_text(text: str) -> bool:
-    """True when the message is already the standard TRAK card intro."""
+def _is_card_cta_sentence(text: str) -> bool:
+    """True when a single sentence is the TRAK tap-cards CTA (not news body)."""
     low = _normalize_text(text)
-    if "found in trak" not in low:
+    if not low or len(low) > 200:
         return False
-    return ("tap" in low and "card" in low) or "tap the card below" in low
+    tap_card = ("tap" in low and "card" in low) or "tap the card below" in low
+    if "related articles from trak" in low:
+        return True
+    if re.search(r"here are \d+ (related )?articles", low) and "trak" in low:
+        return True
+    if re.search(r"here'?s (a |the )?(recent )?(headline|article)", low) and "trak" in low:
+        return True
+    trak_markers = (
+        "found in trak",
+        "headlines i found in trak",
+        "headline i found in trak",
+        "article i found in trak",
+        "articles i found in trak",
+        "trak article i used",
+        "here's the trak article",
+    )
+    if any(m in low for m in trak_markers) and tap_card:
+        return True
+    return False
+
+
+def _is_card_cta_text(text: str) -> bool:
+    """True when the whole block is only card CTA (one or more CTA sentences)."""
+    stripped = (text or "").strip()
+    if not stripped:
+        return False
+    sentences = [s for s in re.split(r"(?<=[.!?])\s+", stripped) if s.strip()]
+    if not sentences:
+        return False
+    return all(_is_card_cta_sentence(s) for s in sentences)
+
+
+def _is_card_intro_text(text: str) -> bool:
+    """Alias for card CTA detection (search/headlines/summarize intros)."""
+    return _is_card_cta_text(text)
+
+
+def _strip_cta_sentences_from_block(text: str) -> str:
+    sentences = re.split(r"(?<=[.!?])\s+", (text or "").strip())
+    kept = [s for s in sentences if s.strip() and not _is_card_cta_sentence(s)]
+    return " ".join(kept).strip()
+
+
+def _strip_card_cta_from_reply(text: str) -> str:
+    """Remove card-intro paragraphs and sentences so only summary body remains."""
+    cleaned = _dedupe_paragraphs((text or "").strip())
+    if not cleaned:
+        return ""
+    parts = [p.strip() for p in re.split(r"\n\n+", cleaned) if p.strip()]
+    out: list[str] = []
+    for part in parts:
+        if _is_card_cta_text(part):
+            continue
+        body = _strip_cta_sentences_from_block(part)
+        if body:
+            out.append(body)
+    return "\n\n".join(out).strip()
 
 
 def _dedupe_paragraphs(text: str) -> str:
@@ -379,6 +438,8 @@ def _extract_short_insight(reply: str, linkable: list[dict]) -> str:
         "Tap the article card below to read the full story",
         "Tap the article card below",
         "Tap any card below to read the full story",
+        "Tap any card below to read more",
+        "related articles from TRAK",
         "Open the article card",
     )
     for title in _titles_in_linkable(linkable):
@@ -396,14 +457,14 @@ def _extract_short_insight(reply: str, linkable: list[dict]) -> str:
 
 def _extract_summary_paragraph(reply: str, linkable: list[dict]) -> str:
     """Pull the summary body from Gemini (may be multiple paragraphs)."""
-    text = _dedupe_paragraphs((reply or "").strip())
-    if not text or _is_card_intro_text(text):
+    text = _strip_card_cta_from_reply(reply)
+    if not text or _is_card_cta_text(text):
         return ""
 
     parts = [p.strip() for p in re.split(r"\n\n+", text) if p.strip()]
     body_parts: list[str] = []
     for part in parts:
-        if _is_card_intro_text(part):
+        if _is_card_cta_text(part):
             continue
         low = part.lower()
         if any(t.lower() in low for t in _titles_in_linkable(linkable) if len(t) > 20):
@@ -424,12 +485,15 @@ def finalize_summarize_reply(
     linkable: list[dict],
     articles: list[dict],
 ) -> str:
-    """Intro + one summary paragraph; cards hold titles."""
-    intro = format_summarize_intro(len(linkable) if linkable else len(articles))
+    """Summary body first; card CTA sentences only at the end (cards hold titles)."""
+    card_cta = format_summarize_intro(len(linkable) if linkable else len(articles))
     summary = _extract_summary_paragraph(reply, linkable or articles)
     if not summary:
         summary = build_local_summary_paragraph(articles)
-    return f"{intro}\n\n{summary}"
+    summary = _strip_card_cta_from_reply(summary)
+    if not summary or _normalize_text(summary) == _normalize_text(card_cta):
+        return card_cta
+    return f"{summary.rstrip()} {card_cta}"
 
 
 def finalize_reply_with_article_cards(

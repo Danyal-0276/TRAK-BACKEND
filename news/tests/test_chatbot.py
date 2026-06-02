@@ -120,6 +120,31 @@ class ChatbotIntentTests(SimpleTestCase):
         body = build_local_summary_paragraph(articles)
         out = finalize_summarize_reply(body, articles, articles)
         self.assertIn("Markets rose", out)
-        self.assertIn("related articles from TRAK", out.lower())
+        self.assertIn("related articles from trak", out.lower())
         self.assertEqual(out.count("Markets rose"), 1)
+        self.assertLess(
+            out.lower().index("markets rose"),
+            out.lower().index("related articles from trak"),
+        )
+
+    def test_summarize_strips_leading_cta(self):
+        articles = [
+            {"id": "1", "title": "A", "summary": "Markets rose today on strong earnings."},
+            {"id": "2", "title": "B", "summary": "Leaders met to discuss trade policy."},
+        ]
+        intro = (
+            "Here are 5 related articles from TRAK. "
+            "Tap any card below to read more."
+        )
+        gemini = (
+            f"{intro}\n\n"
+            "Markets rose today on strong earnings. Leaders met to discuss trade policy."
+        )
+        out = finalize_summarize_reply(gemini, articles, articles)
+        self.assertEqual(out.lower().count("related articles from trak"), 1)
+        self.assertLess(
+            out.lower().index("markets rose"),
+            out.lower().index("related articles from trak"),
+        )
+        self.assertTrue(out.rstrip().endswith("read more."))
 
