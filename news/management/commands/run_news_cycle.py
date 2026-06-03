@@ -35,15 +35,23 @@ class Command(BaseCommand):
             help="Max new articles per source for scrape_raw_news (default 40).",
         )
         parser.add_argument(
+            "--total-limit",
+            type=int,
+            default=None,
+            help="Max new inserts across all sources (optional; used by admin scrape).",
+        )
+        parser.add_argument(
             "--pipeline-limit",
             type=int,
             default=200,
             help="Max pending raw docs for run_ai_pipeline when not using --pipeline-all (default 200).",
         )
+        parser.set_defaults(pipeline_all=True)
         parser.add_argument(
-            "--pipeline-all",
-            action="store_true",
-            help="Drain entire pending queue (passes --all to run_ai_pipeline).",
+            "--no-pipeline-all",
+            action="store_false",
+            dest="pipeline_all",
+            help="Only process up to --pipeline-limit instead of draining the queue.",
         )
         parser.add_argument(
             "--pipeline-batch-size",
@@ -81,11 +89,13 @@ class Command(BaseCommand):
     def handle(self, *args, **options):
         if not options["skip_scrape"]:
             self.stdout.write(self.style.NOTICE("=== Scrape -> raw_articles (pending) ==="))
-            call_command(
-                "scrape_raw_news",
-                sources=options["sources"],
-                limit=options["scrape_limit"],
-            )
+            scrape_kwargs = {
+                "sources": options["sources"],
+                "limit": options["scrape_limit"],
+            }
+            if options.get("total_limit") is not None:
+                scrape_kwargs["total_limit"] = options["total_limit"]
+            call_command("scrape_raw_news", **scrape_kwargs)
         else:
             self.stdout.write(self.style.WARNING("Skipping scrape."))
 

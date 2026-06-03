@@ -44,24 +44,71 @@ def _serialize_notification(doc: dict) -> dict:
     }
 
 
+class BackfillKeywordNotificationsView(APIView):
+    """Scan recent approved articles and create keyword alerts for the current user."""
+
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request):
+        try:
+            hours = min(336, max(1, int(request.data.get("hours", 168))))
+        except (TypeError, ValueError):
+            hours = 168
+        try:
+            limit = min(500, max(1, int(request.data.get("limit", 200))))
+        except (TypeError, ValueError):
+            limit = 200
+        from news.notifications.keyword_alerts import notify_keyword_matches_for_user_recent
+
+        sent = notify_keyword_matches_for_user_recent(
+            request.user, hours=hours, limit=limit
+        )
+        return Response({"sent": sent, "hours": hours, "limit": limit}, status=status.HTTP_200_OK)
+
+
+def _user_id_variants(user) -> list:
+    uid = user.pk
+    return [uid, str(uid)]
+
+
+def _user_notifications_query(user, *, tab: str = "all") -> dict:
+    query: dict = {"user_id": {"$in": _user_id_variants(user)}, "audience": {"$ne": "admin"}}
+    if tab == "keywords":
+        query["type"] = "keyword_match"
+    elif tab == "system":
+        query["type"] = {"$in": ["system", "welcome_back"]}
+    elif tab == "unread":
+        query["read"] = False
+    return query
+
+
+class NotificationsUnreadCountView(APIView):
+    """Lightweight badge count — avoids loading the full notifications list on app startup."""
+
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        tab = str(request.query_params.get("tab") or "all").strip().lower()
+        query = _user_notifications_query(request.user, tab=tab)
+        unread = int(notifications_collection().count_documents({**query, "read": False}))
+        return Response({"unread": unread}, status=status.HTTP_200_OK)
+
+
 class NotificationsListView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request):
-        uid = request.user.pk
         tab = str(request.query_params.get("tab") or "all").strip().lower()
-        query = {"user_id": {"$in": [uid, str(uid)]}, "audience": {"$ne": "admin"}}
-        if tab == "keywords":
-            query["type"] = "keyword_match"
-        elif tab == "system":
-            query["type"] = {"$in": ["system", "welcome_back"]}
-        elif tab == "unread":
-            query["read"] = False
+        try:
+            limit = min(200, max(1, int(request.query_params.get("limit", 80))))
+        except (TypeError, ValueError):
+            limit = 80
+        query = _user_notifications_query(request.user, tab=tab)
         docs = (
             notifications_collection()
             .find(query)
             .sort("created_at", -1)
-            .limit(200)
+            .limit(limit)
         )
         return Response({"results": [_serialize_notification(d) for d in docs]}, status=status.HTTP_200_OK)
 
@@ -74,7 +121,9 @@ class NotificationDetailView(APIView):
             oid = ObjectId(notification_id)
         except Exception:
             return Response({"detail": "Invalid notification id."}, status=status.HTTP_400_BAD_REQUEST)
-        doc = notifications_collection().find_one({"_id": oid, "user_id": request.user.pk})
+        doc = notifications_collection().find_one(
+            {"_id": oid, "user_id": {"$in": _user_id_variants(request.user)}}
+        )
         if not doc:
             return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
         return Response(_serialize_notification(doc), status=status.HTTP_200_OK)
@@ -89,7 +138,7 @@ class MarkNotificationReadView(APIView):
         except Exception:
             return Response({"detail": "Invalid notification id."}, status=status.HTTP_400_BAD_REQUEST)
         res = notifications_collection().find_one_and_update(
-            {"_id": oid, "user_id": request.user.pk},
+            {"_id": oid, "user_id": {"$in": _user_id_variants(request.user)}},
             {"$set": {"read": True, "updated_at": _utc_now()}},
             return_document=ReturnDocument.AFTER,
         )
@@ -104,7 +153,7 @@ class MarkAllNotificationsReadView(APIView):
     def post(self, request):
         now = _utc_now()
         notifications_collection().update_many(
-            {"user_id": request.user.pk, "read": False},
+            {"user_id": {"$in": _user_id_variants(request.user)}, "read": False},
             {"$set": {"read": True, "updated_at": now}},
         )
         return Response({"detail": "All notifications marked as read."}, status=status.HTTP_200_OK)

@@ -33,6 +33,8 @@ def _channels_for_user(user_id: Any, *, audience: str, ntype: str) -> dict[str, 
     row = user_preferences_collection().find_one({"user_id": user_id}) or {}
     if audience == "admin" or str(ntype).startswith("admin_"):
         return {"push": True, "email": True, "in_app": True}
+    if row.get("notifications_enabled") is False:
+        return {"push": False, "email": False, "in_app": False}
     push = row.get("push_enabled")
     email = row.get("email_enabled")
     if ntype == "keyword_match" and row.get("keyword_alerts") is False:

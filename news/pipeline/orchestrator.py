@@ -18,8 +18,10 @@ from news.credibility.inference import predict_credibility
 from news.article_media import article_image_url
 from news.mongo_db import processed_collection, raw_collection
 from news.notifications.keyword_alerts import notify_keyword_matches_for_article
+from news.pipeline.errors import is_transient_pipeline_error
 from news.pipeline.keywords import extract_topic_keywords
 from news.pipeline.ner import extract_entities, ner_model_id
+from news.pipeline.worker_context import pipeline_worker_active
 from news.summarization.inference import summarize_text
 
 # Shared counters for parallel run_batch (reset per batch).
@@ -123,7 +125,10 @@ def process_one_raw(doc: dict) -> dict[str, Any]:
     )
 
     try:
-        notify_keyword_matches_for_article(stored)
+        from news.moderation_rules import article_visible_to_users
+
+        if article_visible_to_users(stored):
+            notify_keyword_matches_for_article(stored)
     except Exception:
         pass
 
@@ -147,6 +152,19 @@ def claim_next_pending() -> Optional[dict[str, Any]]:
     )
 
 
+def requeue_abandoned_processing() -> int:
+    """
+    After workers finish, any row still in processing was abandoned (reload, crash).
+    Put it back on pending so the next batch can claim it.
+    """
+    col = raw_collection()
+    result = col.update_many(
+        {"pipeline_status": "processing"},
+        {"$set": {"pipeline_status": "pending"}, "$unset": {"processing_started_at": ""}},
+    )
+    return int(result.modified_count)
+
+
 def requeue_stale_processing(*, stale_minutes: int = 30) -> int:
     """Reset raw articles stuck in processing (e.g. crashed worker) back to pending."""
     col = raw_collection()
@@ -167,21 +185,51 @@ def requeue_stale_processing(*, stale_minutes: int = 30) -> int:
     return int(result.modified_count)
 
 
+def requeue_transient_failures() -> int:
+    """Move failed raw articles with retryable errors back to pending."""
+    col = raw_collection()
+    failed = list(
+        col.find(
+            {"pipeline_status": "failed", "pipeline_error": {"$exists": True, "$ne": ""}},
+            {"pipeline_error": 1},
+        )
+    )
+    ids = [doc["_id"] for doc in failed if is_transient_pipeline_error(doc.get("pipeline_error") or "")]
+    if not ids:
+        return 0
+    result = col.update_many(
+        {"_id": {"$in": ids}},
+        {"$set": {"pipeline_status": "pending"}, "$unset": {"pipeline_error": ""}},
+    )
+    return int(result.modified_count)
+
+
 def heal_stuck_raw_pipeline(*, stale_minutes: int = 30) -> dict[str, int]:
     """
     Fix raw rows stuck in processing:
-    - already have processed_articles output → mark done
+    - already have processed_articles output → mark done (only if not actively processing)
     - otherwise stale → back to pending
+
+    Skips rows with a recent processing_started_at so parallel workers are not cleared
+    from the processing count while the dashboard polls analytics.
     """
     raw = raw_collection()
     proc_name = processed_collection().name
+    cutoff = datetime.now(timezone.utc) - timedelta(minutes=max(1, stale_minutes))
+    stale_processing_match = {
+        "pipeline_status": "processing",
+        "$or": [
+            {"processing_started_at": {"$lt": cutoff}},
+            {"processing_started_at": {"$exists": False}},
+        ],
+    }
     healed = 0
     try:
         stuck_ids = [
             doc["_id"]
             for doc in raw.aggregate(
                 [
-                    {"$match": {"pipeline_status": "processing"}},
+                    {"$match": stale_processing_match},
                     {"$project": {"canonical_url": 1}},
                     {
                         "$lookup": {
@@ -208,7 +256,8 @@ def heal_stuck_raw_pipeline(*, stale_minutes: int = 30) -> dict[str, int]:
     except Exception:
         healed = 0
     requeued = requeue_stale_processing(stale_minutes=stale_minutes)
-    return {"healed_done": healed, "requeued": requeued}
+    transient = requeue_transient_failures()
+    return {"healed_done": healed, "requeued": requeued, "requeued_transient": transient}
 
 
 def mark_raw_for_reprocess(*, include_failed: bool = True) -> int:
@@ -234,6 +283,17 @@ def _process_claimed_raw(doc: dict) -> dict[str, Any]:
         return process_one_raw(doc)
     except Exception as e:
         err_msg = str(e)[:500]
+        if is_transient_pipeline_error(e):
+            col.update_one(
+                {"_id": doc["_id"]},
+                {"$set": {"pipeline_status": "pending"}, "$unset": {"pipeline_error": ""}},
+            )
+            return {
+                "ok": False,
+                "requeued": True,
+                "error": err_msg,
+                "canonical_url": doc.get("canonical_url"),
+            }
         col.update_one(
             {"_id": doc["_id"]},
             {"$set": {"pipeline_status": "failed", "pipeline_error": err_msg}},
@@ -248,7 +308,7 @@ def _process_claimed_raw(doc: dict) -> dict[str, Any]:
             )
         except Exception:
             pass
-        return {"ok": False, "error": str(e), "canonical_url": doc.get("canonical_url")}
+        return {"ok": False, "error": err_msg, "canonical_url": doc.get("canonical_url")}
 
 
 def _worker_loop(
@@ -264,8 +324,14 @@ def _worker_loop(
         doc = claim_next_pending()
         if doc is None:
             return
-        detail = _process_claimed_raw(doc)
+        token = pipeline_worker_active.set(True)
+        try:
+            detail = _process_claimed_raw(doc)
+        finally:
+            pipeline_worker_active.reset(token)
         with _batch_lock:
+            if detail.get("requeued"):
+                continue
             shared["details"].append(detail)
             if detail.get("ok"):
                 shared["processed"] += 1
@@ -277,41 +343,17 @@ def run_batch(limit: int = 10, *, workers: int = 1) -> dict[str, Any]:
     workers = max(1, min(8, int(workers)))
     limit = max(1, int(limit))
 
-    if workers == 1:
-        col = raw_collection()
-        pending = list(
-            col.find({"pipeline_status": "pending"}).sort("fetched_at", 1).limit(limit)
-        )
-        ok, errors = 0, 0
-        details: list[dict] = []
-        for doc in pending:
-            col.update_one(
-                {"_id": doc["_id"]},
-                {
-                    "$set": {
-                        "pipeline_status": "processing",
-                        "processing_started_at": datetime.now(timezone.utc),
-                    }
-                },
-            )
-            detail = _process_claimed_raw(doc)
-            details.append(detail)
-            if detail.get("ok"):
-                ok += 1
-            else:
-                errors += 1
-    else:
-        shared: dict[str, Any] = {"processed": 0, "errors": 0, "details": []}
-        with ThreadPoolExecutor(max_workers=workers) as pool:
-            futures = [
-                pool.submit(_worker_loop, max_articles=limit, shared=shared)
-                for _ in range(workers)
-            ]
-            for fut in as_completed(futures):
-                fut.result()
-        ok = shared["processed"]
-        errors = shared["errors"]
-        details = shared["details"]
+    shared: dict[str, Any] = {"processed": 0, "errors": 0, "details": []}
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        futures = [
+            pool.submit(_worker_loop, max_articles=limit, shared=shared)
+            for _ in range(workers)
+        ]
+        for fut in as_completed(futures):
+            fut.result()
+    ok = shared["processed"]
+    errors = shared["errors"]
+    details = shared["details"]
 
     result = {
         "processed_ok": ok,
@@ -334,27 +376,44 @@ def run_until_empty(
     max_articles: int = 0,
     workers: int = 1,
 ) -> dict[str, Any]:
-    """Process all pending raw_articles in batches (upsert into processed_articles only)."""
+    """Process pending raw_articles in batches until the pending queue is empty."""
+    col = raw_collection()
     total_ok = 0
     total_errors = 0
     batches = 0
+    requeued_abandoned = 0
     while True:
+        pending_left = col.count_documents({"pipeline_status": "pending"})
+        processing_left = col.count_documents({"pipeline_status": "processing"})
+        if pending_left == 0:
+            if processing_left == 0:
+                break
+            requeued_abandoned += requeue_abandoned_processing()
+            pending_left = col.count_documents({"pipeline_status": "pending"})
+            if pending_left == 0:
+                break
         if max_articles and total_ok + total_errors >= max_articles:
             break
-        limit = batch_size
+        limit = min(batch_size, pending_left)
         if max_articles:
-            limit = min(batch_size, max_articles - total_ok - total_errors)
+            limit = min(limit, max(1, max_articles - total_ok - total_errors))
         result = run_batch(limit=limit, workers=workers)
         batches += 1
         total_ok += result["processed_ok"]
         total_errors += result["errors"]
         if result["processed_ok"] == 0 and result["errors"] == 0:
-            break
-    pending_left = raw_collection().count_documents({"pipeline_status": "pending"})
+            requeued_abandoned += requeue_abandoned_processing()
+            if col.count_documents({"pipeline_status": "pending"}) == 0:
+                break
+    pending_left = col.count_documents({"pipeline_status": "pending"})
+    processing = col.count_documents({"pipeline_status": "processing"})
     return {
         "processed_ok": total_ok,
         "errors": total_errors,
         "batches": batches,
+        "requeued_abandoned": requeued_abandoned,
         "pending_remaining": pending_left,
+        "processing": processing,
         "workers": workers,
+        "drained": pending_left == 0 and processing == 0,
     }

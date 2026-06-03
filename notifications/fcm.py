@@ -14,16 +14,36 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
-_app = None
+# None = not tried yet; app instance = ready; False = push disabled (log once).
+_app: Any = None
+_fcm_unavailable_logged = False
+
+
+def _log_fcm_unavailable_once(message: str, *args) -> None:
+    global _fcm_unavailable_logged
+    if _fcm_unavailable_logged:
+        return
+    _fcm_unavailable_logged = True
+    logger.info("FCM push disabled: " + message, *args)
 
 
 def _ensure_app():
     global _app
+    if _app is False:
+        return None
     if _app is not None:
         return _app
     raw = os.environ.get("FIREBASE_CREDENTIALS_JSON", "").strip()
     path = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS", "").strip()
     if not raw and not path:
+        _app = False
+        return None
+    if path and not os.path.isfile(path):
+        _app = False
+        _log_fcm_unavailable_once(
+            "credentials file not found at %s (in-app notifications still work).",
+            path,
+        )
         return None
     try:
         import firebase_admin
@@ -37,9 +57,11 @@ def _ensure_app():
         else:
             cred = credentials.Certificate(path)
         _app = firebase_admin.initialize_app(cred)
+        logger.info("FCM push enabled.")
         return _app
     except Exception as exc:
-        logger.warning("FCM init failed: %s", exc)
+        _app = False
+        _log_fcm_unavailable_once("%s", exc)
         return None
 
 
