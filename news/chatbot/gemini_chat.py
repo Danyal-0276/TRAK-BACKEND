@@ -534,7 +534,7 @@ def finalize_reply_with_article_cards(
 
 def _gemini_models_to_try() -> list[str]:
     configured = getattr(settings, "GEMINI_CHATBOT_MODEL", "gemini-1.5-flash") or "gemini-1.5-flash"
-    fallbacks = ["gemini-1.5-flash", "gemini-2.0-flash", "gemini-1.5-flash-8b"]
+    fallbacks = list(getattr(settings, "GEMINI_CHATBOT_FALLBACK_MODELS", None) or [])
     out: list[str] = []
     for name in [configured, *fallbacks]:
         if name and name not in out:

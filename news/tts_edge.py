@@ -24,12 +24,7 @@ UR_VOICES = UR_VOICES_FEMALE
 
 
 def _setting(name: str, default: str) -> str:
-    try:
-        return str(getattr(settings, name, default) or default).strip()
-    except Exception:
-        import os
-
-        return str(os.environ.get(name, default) or default).strip()
+    return str(getattr(settings, name, default) or default).strip()
 
 
 def edge_tts_enabled() -> bool:

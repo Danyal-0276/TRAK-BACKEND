@@ -23,10 +23,21 @@ from django.conf import settings
 
 logger = logging.getLogger(__name__)
 
-_GOOGLE_SEARCH_URL = "https://factchecktools.googleapis.com/v1alpha1/claims:search"
-_WIKIPEDIA_API = "https://en.wikipedia.org/w/api.php"
-_WIKIDATA_API = "https://www.wikidata.org/w/api.php"
-_OPENALEX_API = "https://api.openalex.org/works"
+def _google_search_url() -> str:
+    return (getattr(settings, "FACT_CHECKER_GOOGLE_URL", None) or "").strip()
+
+
+def _wikipedia_api_url() -> str:
+    return (getattr(settings, "FACT_CHECKER_WIKIPEDIA_URL", None) or "").strip()
+
+
+def _wikidata_api_url() -> str:
+    return (getattr(settings, "FACT_CHECKER_WIKIDATA_URL", None) or "").strip()
+
+
+def _openalex_api_url() -> str:
+    return (getattr(settings, "FACT_CHECKER_OPENALEX_URL", None) or "").strip().rstrip("/")
+
 
 _RATING_TO_LABEL = {
     "false": 1,
@@ -184,7 +195,7 @@ def _verify_wikipedia(query: str, ml_label: Optional[int]) -> dict[str, Any]:
         }
     )
     try:
-        payload = _http_json_get(f"{_WIKIPEDIA_API}?{params}")
+        payload = _http_json_get(f"{_wikipedia_api_url()}?{params}")
     except Exception as exc:
         logger.exception("Wikipedia fact-check failed: %s", exc)
         base["fact_check_verdict"] = "api_error"
@@ -219,7 +230,7 @@ def _verify_wikidata(query: str, ml_label: Optional[int]) -> dict[str, Any]:
         }
     )
     try:
-        payload = _http_json_get(f"{_WIKIDATA_API}?{params}")
+        payload = _http_json_get(f"{_wikidata_api_url()}?{params}")
     except Exception as exc:
         logger.exception("Wikidata fact-check failed: %s", exc)
         base["fact_check_verdict"] = "api_error"
@@ -266,7 +277,7 @@ def _verify_openalex(query: str, ml_label: Optional[int]) -> dict[str, Any]:
         }
     )
     try:
-        payload = _http_json_get(f"{_OPENALEX_API}?{params}")
+        payload = _http_json_get(f"{_openalex_api_url()}?{params}")
     except Exception as exc:
         logger.exception("OpenAlex fact-check failed: %s", exc)
         base["fact_check_verdict"] = "api_error"
@@ -316,7 +327,7 @@ def _verify_google(query: str, ml_label: Optional[int]) -> dict[str, Any]:
         "pageSize": int(getattr(settings, "FACT_CHECKER_PAGE_SIZE", 5)),
         "key": _google_api_key(),
     }
-    url = f"{_GOOGLE_SEARCH_URL}?{urllib.parse.urlencode(params)}"
+    url = f"{_google_search_url()}?{urllib.parse.urlencode(params)}"
     try:
         payload = _http_json_get(url)
     except urllib.error.HTTPError as exc:

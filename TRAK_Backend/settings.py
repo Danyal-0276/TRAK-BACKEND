@@ -18,6 +18,9 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 
 load_dotenv(dotenv_path=os.path.join(BASE_DIR, ".env"))
 
+# Runtime configuration: read env vars only in this file (see .env.example).
+# Application code should use `from django.conf import settings`.
+
 # Prefer MONGODB_URI_DIRECT when campus/corporate DNS blocks mongodb+srv SRV lookups.
 MONGODB_URI = (
     os.environ.get("MONGODB_URI_DIRECT", "").strip()
@@ -144,10 +147,12 @@ ASGI_APPLICATION = "TRAK_Backend.asgi.application"
 # Raw scraped articles live in a separate database (settings.MONGODB_RAW_DATABASE)
 # accessed directly through pymongo (see news/mongo_db.py).
 
+MONGODB_DJANGO_DATABASE = os.environ.get("MONGODB_DJANGO_DATABASE", "trak_django").strip() or "trak_django"
+
 DATABASES = {
     "default": django_mongodb_backend.parse_uri(
         MONGODB_URI,
-        db_name=os.environ.get("MONGODB_DJANGO_DATABASE", "trak_django"),
+        db_name=MONGODB_DJANGO_DATABASE,
     ),
 }
 
@@ -435,6 +440,11 @@ MONGODB_CHATBOT_HISTORY_COLLECTION = os.environ.get("MONGODB_CHATBOT_HISTORY_COL
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "").strip() or None
 GEMINI_CHATBOT_MODEL = os.environ.get("GEMINI_CHATBOT_MODEL", "gemini-1.5-flash").strip() or "gemini-1.5-flash"
 GEMINI_CHATBOT_TIMEOUT = float(os.environ.get("GEMINI_CHATBOT_TIMEOUT", "45"))
+GEMINI_CHATBOT_FALLBACK_MODELS = [
+    m.strip()
+    for m in os.environ.get("GEMINI_CHATBOT_FALLBACK_MODELS", "").split(",")
+    if m.strip()
+]
 MONGODB_NOTIFICATIONS_COLLECTION = os.environ.get("MONGODB_NOTIFICATIONS_COLLECTION", "notifications")
 MONGODB_DEVICE_TOKENS_COLLECTION = os.environ.get("MONGODB_DEVICE_TOKENS_COLLECTION", "device_tokens")
 MONGODB_USER_PREFERENCES_COLLECTION = os.environ.get("MONGODB_USER_PREFERENCES_COLLECTION", "user_preferences")
@@ -475,6 +485,10 @@ FACT_CHECKER_PARALLEL = os.environ.get("FACT_CHECKER_PARALLEL", "true").strip().
     "yes",
     "on",
 )
+FACT_CHECKER_GOOGLE_URL = os.environ.get("FACT_CHECKER_GOOGLE_URL", "").strip()
+FACT_CHECKER_WIKIPEDIA_URL = os.environ.get("FACT_CHECKER_WIKIPEDIA_URL", "").strip()
+FACT_CHECKER_WIKIDATA_URL = os.environ.get("FACT_CHECKER_WIKIDATA_URL", "").strip()
+FACT_CHECKER_OPENALEX_URL = os.environ.get("FACT_CHECKER_OPENALEX_URL", "").strip().rstrip("/")
 
 # AI pipeline parallelism (CLI / cron / systemd — not Admin HTTP)
 PIPELINE_WORKERS = max(1, min(8, int(os.environ.get("PIPELINE_WORKERS", "1"))))
@@ -496,7 +510,7 @@ PIPELINE_AUTO_LOCK_TTL_SECONDS = max(
 )
 
 # BART news summarizer (HF Space preferred; Hub id is fallback when SUMMARIZER_SPACE_ID unset)
-SUMMARIZER_MODEL_ID = os.environ.get("SUMMARIZER_MODEL_ID", "daniB2112/bart-news-summarizer").strip()
+SUMMARIZER_MODEL_ID = os.environ.get("SUMMARIZER_MODEL_ID", "").strip() or None
 SUMMARIZER_ENABLED = os.environ.get("SUMMARIZER_ENABLED", "true").strip()
 SUMMARIZER_MAX_INPUT_CHARS = int(os.environ.get("SUMMARIZER_MAX_INPUT_CHARS", "4000"))
 SUMMARIZER_MAX_NEW_TOKENS = int(os.environ.get("SUMMARIZER_MAX_NEW_TOKENS", "128"))
@@ -521,6 +535,7 @@ SCRAPER_STORE_RAW_HTML = os.environ.get("SCRAPER_STORE_RAW_HTML", "false").lower
 
 # Currents API — https://currentsapi.services (free tier ~1000 requests/day).
 # One /latest-news call per scrape run (~30 articles). Optional category searches cost +1 req each.
+CURRENTS_API_BASE_URL = os.environ.get("CURRENTS_API_BASE_URL", "").strip().rstrip("/")
 CURRENTS_API_KEY = os.environ.get("CURRENTS_API_KEY", "").strip()
 CURRENTS_API_LANGUAGE = os.environ.get("CURRENTS_API_LANGUAGE", "en").strip() or "en"
 CURRENTS_API_COUNTRY = os.environ.get("CURRENTS_API_COUNTRY", "").strip()
@@ -535,6 +550,7 @@ CURRENTS_API_FETCH_ARTICLE_PAGES = os.environ.get(
 ).lower() in ("1", "true", "yes")
 
 # NewsData.io — https://newsdata.io (free tier: 10 articles/request, daily API credits).
+NEWSDATA_API_BASE_URL = os.environ.get("NEWSDATA_API_BASE_URL", "").strip().rstrip("/")
 NEWSDATA_API_KEY = os.environ.get("NEWSDATA_API_KEY", "").strip()
 NEWSDATA_API_LANGUAGE = os.environ.get("NEWSDATA_API_LANGUAGE", "en").strip() or "en"
 NEWSDATA_API_COUNTRY = os.environ.get("NEWSDATA_API_COUNTRY", "").strip()
@@ -550,6 +566,7 @@ NEWSDATA_API_FETCH_ARTICLE_PAGES = os.environ.get(
 ).lower() in ("1", "true", "yes")
 
 # GNews — https://gnews.io (free tier: 10 articles/request, daily request limit).
+GNEWS_API_BASE_URL = os.environ.get("GNEWS_API_BASE_URL", "").strip().rstrip("/")
 GNEWS_API_KEY = os.environ.get("GNEWS_API_KEY", "").strip()
 GNEWS_API_LANGUAGE = os.environ.get("GNEWS_API_LANGUAGE", "en").strip() or "en"
 GNEWS_API_COUNTRY = os.environ.get("GNEWS_API_COUNTRY", "").strip()
@@ -577,14 +594,21 @@ SCRAPER_GENERIC_SOURCES = []
 # Path to JSON file (list of site configs, or {"sites": [...]}) relative to BASE_DIR if not absolute.
 SCRAPER_GENERIC_SOURCES_JSON = os.environ.get("SCRAPER_GENERIC_SOURCES_JSON", "").strip() or None
 
-# Bilingual article TTS (Hugging Face Space: abd8433/urdu-tts-api)
-TTS_API_BASE_URL = os.environ.get(
-    "TTS_API_BASE_URL",
-    "https://abd8433-urdu-tts-api.hf.space",
-).strip()
+# Bilingual article TTS (Hugging Face Space — set TTS_API_BASE_URL in .env)
+TTS_API_BASE_URL = os.environ.get("TTS_API_BASE_URL", "").strip().rstrip("/") or None
 TTS_API_TIMEOUT_SEC = int(os.environ.get("TTS_API_TIMEOUT_SEC", "360") or "360")
 # Set TTS_PREFER_LOCAL=true to skip HF Space (runs models on this server; first call is slow).
 TTS_PREFER_LOCAL = os.environ.get("TTS_PREFER_LOCAL", "").strip()
 # Fast path: Microsoft Edge neural TTS + Google Translate for Urdu (default on).
 TTS_USE_EDGE = os.environ.get("TTS_USE_EDGE", "true").strip()
 TTS_EDGE_RATE = os.environ.get("TTS_EDGE_RATE", "+12%").strip()
+
+# --- Firebase Cloud Messaging (optional mobile push) ---
+FIREBASE_CREDENTIALS_JSON = os.environ.get("FIREBASE_CREDENTIALS_JSON", "").strip()
+GOOGLE_APPLICATION_CREDENTIALS = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS", "").strip()
+
+# --- Auth / ops (not secrets; tune per environment) ---
+EMAIL_WORKER_THREADS = max(1, int(os.environ.get("EMAIL_WORKER_THREADS", "4")))
+OTP_DEV_PREVIEW = os.environ.get("OTP_DEV_PREVIEW", "").lower() in ("1", "true", "yes")
+SEED_ADMIN_PASSWORD = os.environ.get("SEED_ADMIN_PASSWORD", "").strip()
+SPACY_MODEL = os.environ.get("SPACY_MODEL", "en_core_web_sm").strip() or "en_core_web_sm"

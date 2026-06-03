@@ -34,17 +34,11 @@ def _mongo_safe_labels_map(src: dict[Any, Any]) -> dict[str, str]:
 
 
 def _fake_detection_space_id() -> str:
-    try:
-        return (getattr(settings, "FAKE_DETECTION_SPACE_ID", None) or "").strip()
-    except Exception:
-        return (os.environ.get("FAKE_DETECTION_SPACE_ID") or "").strip()
+    return (getattr(settings, "FAKE_DETECTION_SPACE_ID", None) or "").strip()
 
 
 def _fake_detection_api_name() -> Optional[str]:
-    try:
-        name = (getattr(settings, "FAKE_DETECTION_SPACE_API_NAME", None) or "").strip()
-    except Exception:
-        name = (os.environ.get("FAKE_DETECTION_SPACE_API_NAME") or "").strip()
+    name = (getattr(settings, "FAKE_DETECTION_SPACE_API_NAME", None) or "").strip()
     return name or None
 
 
@@ -327,15 +321,12 @@ def preload_credibility_model() -> dict[str, Any]:
 
 
 def _effective_threshold() -> float:
-    try:
-        path = getattr(settings, "CREDIBILITY_MODEL_PATH", None) or ""
-        if path and os.path.isdir(path):
-            meta_t = _read_metadata_threshold(path)
-            if meta_t is not None:
-                return meta_t
-        return float(getattr(settings, "CREDIBILITY_CONFIDENCE_THRESHOLD", 0.6))
-    except Exception:
-        return float(os.environ.get("CREDIBILITY_CONFIDENCE_THRESHOLD", 0.6))
+    path = getattr(settings, "CREDIBILITY_MODEL_PATH", None) or ""
+    if path and os.path.isdir(path):
+        meta_t = _read_metadata_threshold(path)
+        if meta_t is not None:
+            return meta_t
+    return float(getattr(settings, "CREDIBILITY_CONFIDENCE_THRESHOLD", 0.6))
 
 
 def predict_credibility(text: str, *, title: str = "") -> dict[str, Any]:

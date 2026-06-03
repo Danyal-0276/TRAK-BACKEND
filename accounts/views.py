@@ -974,7 +974,7 @@ class VerifyContactConfirmView(RatelimitedAPIMixin, APIView):
 
 
 def _otp_preview_enabled() -> bool:
-    return os.environ.get("OTP_DEV_PREVIEW", "").lower() in ("1", "true", "yes")
+    return bool(getattr(settings, "OTP_DEV_PREVIEW", False))
 
 
 class PasswordResetCheckEmailView(RatelimitedAPIMixin, APIView):

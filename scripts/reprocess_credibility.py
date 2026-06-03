@@ -14,7 +14,6 @@ Optional: gradio-client for HF Space fake detection (FAKE_DETECTION_SPACE_ID in 
 from __future__ import annotations
 
 import argparse
-import os
 import sys
 from pathlib import Path
 
@@ -31,28 +30,24 @@ if load_dotenv:
 
 
 def _configure_minimal_settings() -> None:
-    """Configure Django settings object only (no django.setup — breaks on Python 3.14)."""
+    """Wire django.conf.settings from TRAK_Backend.settings (.env already loaded there)."""
     from django.conf import settings
 
     if settings.configured:
         return
+    from TRAK_Backend import settings as cfg
+
     settings.configure(
-        CREDIBILITY_CONFIDENCE_THRESHOLD=float(
-            os.environ.get("CREDIBILITY_CONFIDENCE_THRESHOLD", "0.6")
-        ),
-        FAKE_DETECTION_SPACE_ID=os.environ.get("FAKE_DETECTION_SPACE_ID", "").strip() or None,
-        FAKE_DETECTION_SPACE_API_NAME=os.environ.get("FAKE_DETECTION_SPACE_API_NAME", "").strip()
-        or None,
-        HF_TOKEN=os.environ.get("HF_TOKEN", "").strip() or None,
-        CREDIBILITY_MODEL_PATH=os.environ.get("CREDIBILITY_MODEL_PATH", "").strip() or None,
-        FACT_CHECKER_ENABLED=str(os.environ.get("FACT_CHECKER_ENABLED", "false")).lower()
-        in ("1", "true", "yes", "on"),
-        FACT_CHECKER_PROVIDERS=os.environ.get(
-            "FACT_CHECKER_PROVIDERS", "wikipedia,wikidata,openalex"
-        ),
-        FACT_CHECKER_PROVIDER=os.environ.get("FACT_CHECKER_PROVIDER", "wikipedia"),
-        OPENALEX_MAILTO=os.environ.get("OPENALEX_MAILTO", ""),
-        GOOGLE_FACT_CHECK_API_KEY=os.environ.get("GOOGLE_FACT_CHECK_API_KEY", ""),
+        CREDIBILITY_CONFIDENCE_THRESHOLD=cfg.CREDIBILITY_CONFIDENCE_THRESHOLD,
+        FAKE_DETECTION_SPACE_ID=cfg.FAKE_DETECTION_SPACE_ID,
+        FAKE_DETECTION_SPACE_API_NAME=cfg.FAKE_DETECTION_SPACE_API_NAME,
+        HF_TOKEN=cfg.HF_TOKEN,
+        CREDIBILITY_MODEL_PATH=cfg.CREDIBILITY_MODEL_PATH,
+        FACT_CHECKER_ENABLED=cfg.FACT_CHECKER_ENABLED,
+        FACT_CHECKER_PROVIDERS=cfg.FACT_CHECKER_PROVIDERS,
+        FACT_CHECKER_PROVIDER=cfg.FACT_CHECKER_PROVIDER,
+        OPENALEX_MAILTO=cfg.OPENALEX_MAILTO,
+        GOOGLE_FACT_CHECK_API_KEY=cfg.GOOGLE_FACT_CHECK_API_KEY,
     )
 
 
@@ -69,12 +64,11 @@ def main() -> int:
 
     from news.credibility.inference import predict_credibility
 
-    uri = (
-        os.environ.get("MONGODB_URI_DIRECT", "").strip()
-        or os.environ.get("MONGODB_URI", "mongodb://127.0.0.1:27017").strip()
-    )
-    db_name = os.environ.get("MONGODB_RAW_DATABASE", "TRAK_DB")
-    coll_name = os.environ.get("MONGODB_PROCESSED_COLLECTION", "processed_articles")
+    from TRAK_Backend import settings as cfg
+
+    uri = cfg.MONGODB_URI
+    db_name = cfg.MONGODB_RAW_DATABASE
+    coll_name = cfg.MONGODB_PROCESSED_COLLECTION
 
     client = MongoClient(uri, serverSelectionTimeoutMS=8000)
     coll = client[db_name][coll_name]

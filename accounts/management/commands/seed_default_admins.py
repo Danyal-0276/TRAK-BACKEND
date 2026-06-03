@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import os
-
 from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.core.management.base import BaseCommand
@@ -33,8 +31,8 @@ class Command(BaseCommand):
         )
 
     def handle(self, *args, **options):
-        pwd = (options.get("password") or "").strip() or os.environ.get(
-            "SEED_ADMIN_PASSWORD", ""
+        pwd = (options.get("password") or "").strip() or (
+            getattr(settings, "SEED_ADMIN_PASSWORD", "") or ""
         ).strip()
         if not pwd:
             self.stderr.write(

@@ -15,8 +15,6 @@ from news.spaces.client import parse_summary_response, preload_space, space_pred
 
 logger = logging.getLogger(__name__)
 
-_DEFAULT_MODEL_ID = "daniB2112/bart-news-summarizer"
-
 _model = None
 _tokenizer = None
 _device = None
@@ -53,7 +51,7 @@ def extractive_summary(text: str, max_sentences: int = 2) -> str:
 
 
 def _model_source() -> str:
-    return (getattr(settings, "SUMMARIZER_MODEL_ID", None) or _DEFAULT_MODEL_ID).strip()
+    return (getattr(settings, "SUMMARIZER_MODEL_ID", None) or "").strip()
 
 
 def _summarizer_enabled() -> bool:

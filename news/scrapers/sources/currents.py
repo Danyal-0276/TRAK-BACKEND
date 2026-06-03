@@ -17,7 +17,8 @@ from news.scrapers import robots as robots_util
 from news.scrapers import storage
 from news.scrapers.site_key import source_key_for_article_url
 
-BASE_URL = "https://api.currentsapi.services/v1"
+def _base_url() -> str:
+    return (getattr(settings, "CURRENTS_API_BASE_URL", None) or "").strip().rstrip("/")
 
 
 def _api_key() -> str:
@@ -83,7 +84,10 @@ def _fetch_news(
     params: dict[str, str],
 ) -> tuple[list[dict[str, Any]], str | None]:
     query = urlencode({k: v for k, v in params.items() if v})
-    url = f"{BASE_URL}{path}?{query}" if query else f"{BASE_URL}{path}"
+    base = _base_url()
+    if not base:
+        return [], "CURRENTS_API_BASE_URL not set in .env"
+    url = f"{base}{path}?{query}" if query else f"{base}{path}"
     try:
         response = client.get(url, extra_headers=_auth_headers())
     except Exception as exc:

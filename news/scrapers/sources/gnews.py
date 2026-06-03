@@ -16,7 +16,10 @@ from news.scrapers import robots as robots_util
 from news.scrapers import storage
 from news.scrapers.site_key import source_key_for_article_url
 
-BASE_URL = "https://gnews.io/api/v4"
+def _base_url() -> str:
+    return (getattr(settings, "GNEWS_API_BASE_URL", None) or "").strip().rstrip("/")
+
+
 VALID_CATEGORIES = frozenset({
     "general",
     "world",
@@ -86,7 +89,10 @@ def _fetch_articles(
     params: dict[str, str],
 ) -> tuple[list[dict[str, Any]], str | None]:
     params = {**params, "apikey": _api_key()}
-    url = f"{BASE_URL}/top-headlines?{urlencode({k: v for k, v in params.items() if v})}"
+    base = _base_url()
+    if not base:
+        return [], "GNEWS_API_BASE_URL not set in .env"
+    url = f"{base}/top-headlines?{urlencode({k: v for k, v in params.items() if v})}"
     try:
         response = client.get(url, extra_headers=_json_headers())
     except Exception as exc:

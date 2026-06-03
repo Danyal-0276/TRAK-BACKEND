@@ -11,6 +11,8 @@ import os
 import re
 from typing import Any
 
+from django.conf import settings
+
 from news.pipeline.stopwords import get_english_stopwords
 
 # spaCy labels we keep (people, places, orgs, events — not dates/numbers)
@@ -69,7 +71,7 @@ def _get_spacy_nlp():
     try:
         import spacy
 
-        model = os.environ.get("SPACY_MODEL", "en_core_web_sm").strip() or "en_core_web_sm"
+        model = (getattr(settings, "SPACY_MODEL", None) or "en_core_web_sm").strip()
         _SPACY_NLP = spacy.load(model, disable=["lemmatizer"])
         _SPACY_MODEL_ID = f"spacy-{model}"
     except Exception:
