@@ -31,6 +31,14 @@ services:
         value: /detect
       - key: SUMMARIZER_MODEL_ID
         value: daniB2112/bart-news-summarizer
+      - key: TTS_API_BASE_URL
+        value: https://abd8433-urdu-tts-api.hf.space
+      - key: CURRENTS_API_BASE_URL
+        value: https://api.currentsapi.services/v1
+      - key: NEWSDATA_API_BASE_URL
+        value: https://newsdata.io/api/1
+      - key: GNEWS_API_BASE_URL
+        value: https://gnews.io/api/v4
       - key: SUMMARIZER_ENABLED
         value: "true"
       - key: FACT_CHECKER_ENABLED

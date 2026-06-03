@@ -153,7 +153,7 @@ class OtpService:
             )
             logger.info("OTP issued purpose=%s email=%s", purpose, normalized)
 
-        preview = os.environ.get("OTP_DEV_PREVIEW", "").lower() in ("1", "true", "yes")
+        preview = bool(getattr(settings, "OTP_DEV_PREVIEW", False))
         if send_email:
             dev_code = code if (settings.DEBUG or preview) else None
         else:

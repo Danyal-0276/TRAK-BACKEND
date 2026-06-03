@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 from typing import Any
 
 from django.conf import settings
@@ -26,10 +25,7 @@ def combine_credibility(
     ml keys: fake_detection_label, fake_detection_probs, fake_detection_max_prob, fake_detection_model_id
     fact_check keys: fact_check_* from verify_claim()
     """
-    try:
-        threshold = float(getattr(settings, "CREDIBILITY_CONFIDENCE_THRESHOLD", 0.6))
-    except Exception:
-        threshold = float(os.environ.get("CREDIBILITY_CONFIDENCE_THRESHOLD", 0.6))
+    threshold = float(getattr(settings, "CREDIBILITY_CONFIDENCE_THRESHOLD", 0.6))
     labels_map = ml.get("fake_detection_labels_map") or _DEFAULT_ID2LABEL
     ml_label = int(ml.get("fake_detection_label", 2))
     ml_probs = list(ml.get("fake_detection_probs") or [])

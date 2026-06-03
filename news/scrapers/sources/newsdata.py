@@ -16,7 +16,8 @@ from news.scrapers import robots as robots_util
 from news.scrapers import storage
 from news.scrapers.site_key import source_key_for_article_url
 
-BASE_URL = "https://newsdata.io/api/1"
+def _base_url() -> str:
+    return (getattr(settings, "NEWSDATA_API_BASE_URL", None) or "").strip().rstrip("/")
 
 
 def _api_key() -> str:
@@ -90,7 +91,10 @@ def _fetch_news(
     params: dict[str, str],
 ) -> tuple[list[dict[str, Any]], str | None]:
     params = {**params, "apikey": _api_key()}
-    url = f"{BASE_URL}{path}?{urlencode({k: v for k, v in params.items() if v})}"
+    base = _base_url()
+    if not base:
+        return [], "NEWSDATA_API_BASE_URL not set in .env"
+    url = f"{base}{path}?{urlencode({k: v for k, v in params.items() if v})}"
     try:
         response = client.get(url, extra_headers=_json_headers())
     except Exception as exc:

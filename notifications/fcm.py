@@ -12,6 +12,8 @@ import logging
 import os
 from typing import Any
 
+from django.conf import settings
+
 logger = logging.getLogger(__name__)
 
 # None = not tried yet; app instance = ready; False = push disabled (log once).
@@ -33,8 +35,8 @@ def _ensure_app():
         return None
     if _app is not None:
         return _app
-    raw = os.environ.get("FIREBASE_CREDENTIALS_JSON", "").strip()
-    path = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS", "").strip()
+    raw = (getattr(settings, "FIREBASE_CREDENTIALS_JSON", None) or "").strip()
+    path = (getattr(settings, "GOOGLE_APPLICATION_CREDENTIALS", None) or "").strip()
     if not raw and not path:
         _app = False
         return None

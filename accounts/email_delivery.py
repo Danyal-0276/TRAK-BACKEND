@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 import logging
-import os
 from concurrent.futures import ThreadPoolExecutor
 
+from django.conf import settings
 from django.db import close_old_connections
 
 from accounts.services.email_service import AuthEmailService
@@ -13,7 +13,7 @@ from accounts.services.email_service import AuthEmailService
 logger = logging.getLogger("accounts.email")
 
 _EXECUTOR = ThreadPoolExecutor(
-    max_workers=int(os.environ.get("EMAIL_WORKER_THREADS", "4")),
+    max_workers=int(getattr(settings, "EMAIL_WORKER_THREADS", 4)),
     thread_name_prefix="trak-email",
 )
 

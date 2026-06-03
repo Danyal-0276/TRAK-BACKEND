@@ -29,7 +29,7 @@ def main() -> int:
         "CREDIBILITY_CONFIDENCE_THRESHOLD",
     ]
     for key in keys:
-        val = getattr(settings, key, None) or os.environ.get(key, "")
+        val = getattr(settings, key, None)
         display = val if val else "(unset)"
         if key == "HF_TOKEN" and val:
             display = val[:8] + "..."

@@ -132,8 +132,9 @@ def _merge_wav_base64_parts(parts: list[str]) -> str:
     return base64.b64encode(out.getvalue()).decode("ascii")
 
 
-def _base_url() -> str:
-    return (getattr(settings, "TTS_API_BASE_URL", None) or "https://abd8433-urdu-tts-api.hf.space").rstrip("/")
+def _base_url() -> str | None:
+    url = (getattr(settings, "TTS_API_BASE_URL", None) or "").strip().rstrip("/")
+    return url or None
 
 
 def _prefer_local() -> bool:
@@ -146,9 +147,12 @@ def _prefer_local() -> bool:
 
 def _remote_synthesize_one(text: str, language: str) -> dict:
     """Single-chunk Hugging Face Space call."""
+    base = _base_url()
+    if not base:
+        raise RuntimeError("TTS_API_BASE_URL is not set in .env")
     lang = str(language or "english").lower().strip()
     path = "/tts/english" if lang == "english" else "/tts/english-to-urdu"
-    url = f"{_base_url()}{path}"
+    url = f"{base}{path}"
     body = json.dumps({"text": text}).encode("utf-8")
     req = urllib.request.Request(
         url,
