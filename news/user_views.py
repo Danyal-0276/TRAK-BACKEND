@@ -663,11 +663,16 @@ class BookmarkListCreateView(APIView):
         article_id = str(request.data.get("article_id") or "").strip()
         if not article_id:
             return Response({"detail": "article_id is required."}, status=status.HTTP_400_BAD_REQUEST)
+        article = article_query.get_article_by_id(article_id, request.user)
+        if article is None:
+            return Response({"detail": "Article not found."}, status=status.HTTP_404_NOT_FOUND)
         payload = {
             "user_id": request.user.pk,
             "article_id": article_id,
-            "title": str(request.data.get("title") or "").strip(),
-            "url": str(request.data.get("url") or "").strip(),
+            "title": str(request.data.get("title") or article.get("title") or "").strip(),
+            "url": str(
+                request.data.get("url") or article.get("canonical_url") or article.get("url") or ""
+            ).strip(),
         }
         bookmarks_collection().update_one(
             {"user_id": request.user.pk, "article_id": article_id},

@@ -118,11 +118,33 @@ def doc_needs_review(doc: dict[str, Any] | None) -> bool:
     return is_fake_or_suspicious_label(doc) and fact_check_ran(doc)
 
 
+def real_label_clause() -> dict[str, Any]:
+    """Mongo filter: processed articles classified as Real (label 0)."""
+    return {
+        "$or": [
+            {"credibility_label": 0},
+            {"credibility_label_name": {"$regex": r"^real", "$options": "i"}},
+        ]
+    }
+
+
+def user_feed_visibility_clause() -> dict[str, Any]:
+    """Mongo pre-filter for user-facing feeds (explore, search, pics, personalized feed)."""
+    return {
+        "$and": [
+            {"moderation_status": {"$nin": ["rejected", "review"]}},
+            real_label_clause(),
+        ]
+    }
+
+
 def article_visible_to_users(doc: dict[str, Any] | None) -> bool:
-    """True when the article may appear in user feeds and keyword alerts."""
+    """True when the article may appear in user feeds and keyword alerts (Real only)."""
     if not doc:
         return False
     ms = str(doc.get("moderation_status") or "").strip().lower()
     if ms in {"rejected", "review"}:
+        return False
+    if not is_real_label(doc):
         return False
     return True

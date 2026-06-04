@@ -13,7 +13,7 @@ from news.credibility.score import (
 )
 from news.article_media import article_image_url, hydrate_processed_image_urls
 from news.category_matching import interest_matches_hay, user_follows_all_categories
-from news.moderation_rules import article_visible_to_users
+from news.moderation_rules import article_visible_to_users, user_feed_visibility_clause
 from news.mongo_db import processed_collection, raw_collection, reactions_collection, user_keywords_collection
 from news.services.feed_cache import explore_cache_key, get_cached_explore, set_cached_explore
 
@@ -224,12 +224,13 @@ def _search_filter_clause(q: str) -> dict:
     }
 
 
-def _merge_query(base: dict, extra: dict) -> dict:
-    if not extra:
-        return base
-    if not base:
-        return extra
-    return {"$and": [base, extra]}
+def _merge_query(*parts: dict) -> dict:
+    clauses = [p for p in parts if p]
+    if not clauses:
+        return {}
+    if len(clauses) == 1:
+        return clauses[0]
+    return {"$and": clauses}
 
 
 def get_user_feed(
@@ -262,7 +263,11 @@ def get_user_feed_page(
     proc = processed_collection()
     page_size = max(1, min(int(limit or 30), 100))
     batch_size = max(page_size * 4, 80)
-    query = _merge_query(_query_after_cursor(cursor or ""), _search_filter_clause(q))
+    query = _merge_query(
+        _query_after_cursor(cursor or ""),
+        _search_filter_clause(q),
+        user_feed_visibility_clause(),
+    )
 
     out: list[dict] = []
     last_seen_doc: Optional[dict] = None
@@ -294,7 +299,11 @@ def get_user_feed_page(
         next_scan_cursor = _cursor_payload_from_doc(docs[-1])
         if not next_scan_cursor:
             break
-        query = _merge_query(_query_after_cursor(next_scan_cursor), _search_filter_clause(q))
+        query = _merge_query(
+            _query_after_cursor(next_scan_cursor),
+            _search_filter_clause(q),
+            user_feed_visibility_clause(),
+        )
 
     next_cursor = _cursor_payload_from_doc(last_seen_doc or {})
     has_more = False
@@ -302,7 +311,11 @@ def get_user_feed_page(
         if len(out) >= page_size:
             has_more = True
         else:
-            probe_query = _merge_query(_query_after_cursor(next_cursor), _search_filter_clause(q))
+            probe_query = _merge_query(
+                _query_after_cursor(next_cursor),
+                _search_filter_clause(q),
+                user_feed_visibility_clause(),
+            )
             while True:
                 docs = list(
                     proc.find(probe_query, PROCESSED_FEED_PROJECTION)
@@ -320,7 +333,11 @@ def get_user_feed_page(
                 next_scan_cursor = _cursor_payload_from_doc(docs[-1])
                 if not next_scan_cursor:
                     break
-                probe_query = _merge_query(_query_after_cursor(next_scan_cursor), _search_filter_clause(q))
+                probe_query = _merge_query(
+                    _query_after_cursor(next_scan_cursor),
+                    _search_filter_clause(q),
+                    user_feed_visibility_clause(),
+                )
 
     hydrate_article_reaction_counts(out)
     return {"results": out, "next_cursor": next_cursor if has_more else None, "has_more": has_more}
@@ -393,7 +410,10 @@ def search_processed_articles(search_q: str, *, limit: int = 10) -> list[dict]:
         return []
 
     docs = list(
-        proc.find({"$or": or_clauses}, PROCESSED_FEED_PROJECTION)
+        proc.find(
+            _merge_query({"$or": or_clauses}, user_feed_visibility_clause()),
+            PROCESSED_FEED_PROJECTION,
+        )
         .sort("processed_at", -1)
         .limit(max(limit * 4, 24))
     )
@@ -437,7 +457,7 @@ def get_recent_processed_articles(*, limit: int = 10) -> list[dict]:
     page_size = max(1, min(int(limit or 10), 30))
     docs = list(
         processed_collection()
-        .find({}, PROCESSED_FEED_PROJECTION)
+        .find(user_feed_visibility_clause(), PROCESSED_FEED_PROJECTION)
         .sort("processed_at", -1)
         .limit(page_size)
     )
@@ -544,7 +564,11 @@ def get_pics_feed_page(
     page_size = max(1, min(int(limit or 30), 200))
     proc = processed_collection()
     batch_size = max(page_size * 5, 100)
-    query = _merge_query(_query_after_cursor(cursor or ""), _search_filter_clause(q))
+    query = _merge_query(
+        _query_after_cursor(cursor or ""),
+        _search_filter_clause(q),
+        user_feed_visibility_clause(),
+    )
 
     out: list[dict] = []
     last_seen_doc: Optional[dict] = None
@@ -576,7 +600,11 @@ def get_pics_feed_page(
             next_scan_cursor = _cursor_payload_from_doc(fetched[-1])
             if not next_scan_cursor:
                 break
-            query = _merge_query(_query_after_cursor(next_scan_cursor), _search_filter_clause(q))
+            query = _merge_query(
+                _query_after_cursor(next_scan_cursor),
+                _search_filter_clause(q),
+                user_feed_visibility_clause(),
+            )
             continue
 
         filtered: list[dict] = []
@@ -598,7 +626,11 @@ def get_pics_feed_page(
         next_scan_cursor = _cursor_payload_from_doc(fetched[-1])
         if not next_scan_cursor:
             break
-        query = _merge_query(_query_after_cursor(next_scan_cursor), _search_filter_clause(q))
+        query = _merge_query(
+            _query_after_cursor(next_scan_cursor),
+            _search_filter_clause(q),
+            user_feed_visibility_clause(),
+        )
 
     next_cursor = _cursor_payload_from_doc(last_seen_doc or {})
     has_more = bool(next_cursor and last_batch_len >= batch_size)
@@ -623,7 +655,11 @@ def get_explore_feed_page(
 
     proc = processed_collection()
     batch_size = max(page_size * 4, 80)
-    query = _merge_query(_query_after_cursor(cursor or ""), _search_filter_clause(q))
+    query = _merge_query(
+        _query_after_cursor(cursor or ""),
+        _search_filter_clause(q),
+        user_feed_visibility_clause(),
+    )
 
     out: list[dict] = []
     last_seen_doc: Optional[dict] = None
@@ -674,7 +710,11 @@ def get_explore_feed_page(
         next_scan_cursor = _cursor_payload_from_doc(docs[-1])
         if not next_scan_cursor:
             break
-        query = _merge_query(_query_after_cursor(next_scan_cursor), _search_filter_clause(q))
+        query = _merge_query(
+            _query_after_cursor(next_scan_cursor),
+            _search_filter_clause(q),
+            user_feed_visibility_clause(),
+        )
 
     next_cursor = _cursor_payload_from_doc(last_seen_doc or {})
     has_more = bool(next_cursor and last_batch_len >= batch_size)
