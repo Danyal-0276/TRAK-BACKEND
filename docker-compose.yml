@@ -1,26 +1,51 @@
-# TRAK Backend — Docker Compose (API only)
+# TRAK API — single Compose file
 #
-# MongoDB stays on Atlas (.env MONGODB_URI). Web = Vercel. Mobile = separate app.
-# This container is only the Django API (same role as Render today).
-#
-# From this folder:
+# Local (build from Dockerfile, Atlas via .env):
 #   docker compose up -d --build
 #   curl http://127.0.0.1:8000/api/accounts/health/
 #
-# Optional local MongoDB + Redis for offline dev:
-#   docker compose -f docker-compose.yml -f docker-compose.local-db.yml up -d --build
+# Local + MongoDB + Redis (offline dev):
+#   docker compose --profile localdb up -d --build
+#
+# VPS (pull image from GHCR; .env on server only):
+#   export API_IMAGE=ghcr.io/<owner>/trak-api:<git-sha>
+#   docker compose up -d --no-build --force-recreate
+#
+# MongoDB on Atlas for normal dev/prod. Web = Vercel. Mobile = separate app.
 
 services:
   api:
     build: .
-    image: trak-api:local
+    image: ${API_IMAGE:-trak-api:local}
     container_name: trak-api
     restart: unless-stopped
     ports:
       - "8000:8000"
     volumes:
-      # Mount .env so Django reads it directly (avoids Compose $ interpolation on secrets)
       - ./.env:/app/.env:ro
       # Optional FCM: - ./firebase-service-account.json:/app/firebase-service-account.json:ro
     environment:
-      DJANGO_ALLOWED_HOSTS: localhost,127.0.0.1,0.0.0.0
+      DJANGO_ALLOWED_HOSTS: ${DJANGO_ALLOWED_HOSTS:-localhost,127.0.0.1,0.0.0.0}
+      # With --profile localdb, set in .env: MONGODB_URI=mongodb://mongodb:27017, REDIS_URL=redis://redis:6379/0, USE_REDIS=true
+
+  mongodb:
+    profiles: [localdb]
+    image: mongo:6.0
+    container_name: trak-mongodb
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongodb_data:/data/db
+
+  redis:
+    profiles: [localdb]
+    image: redis:7-alpine
+    container_name: trak-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+
+volumes:
+  mongodb_data:
+  redis_data:
