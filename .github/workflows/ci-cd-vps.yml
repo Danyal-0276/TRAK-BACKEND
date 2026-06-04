@@ -109,7 +109,20 @@ jobs:
 
             docker image prune -f
 
-            curl -fsS http://127.0.0.1:8000/api/accounts/health/ || (docker compose logs --tail=80 api && exit 1)
+            # Migrations + Daphne need ~30–90s after recreate; immediate curl fails.
+            echo "Waiting for API health..."
+            for i in $(seq 1 36); do
+              if curl -fsS http://127.0.0.1:8000/api/accounts/health/ >/dev/null 2>&1; then
+                curl -fsS http://127.0.0.1:8000/api/accounts/health/
+                echo ""
+                echo "Health check OK."
+                exit 0
+              fi
+              sleep 5
+            done
+            echo "Health check timed out after 3 minutes."
+            docker compose logs --tail=80 api
+            exit 1
         env:
           GHCR_OWNER: ${{ steps.owner.outputs.value }}
           IMAGE_TAG: ${{ github.sha }}
