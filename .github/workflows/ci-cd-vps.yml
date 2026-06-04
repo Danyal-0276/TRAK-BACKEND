@@ -1,6 +1,6 @@
 # TRAK_Backend repo CI/CD — build API image, deploy to VPS.
 # Secrets: VPS_HOST, VPS_USER, VPS_SSH_KEY, READ_GHCR_TOKEN
-# Server: .env on VPS (never commit).
+# Server: .env at ~/trak/.env on VPS (never commit). App dir: /home/<VPS_USER>/trak
 
 name: CI-CD VPS Deploy
 
@@ -94,8 +94,10 @@ jobs:
           script_stop: true
           script: |
             set -e
-            cd /opt/trak
-
+            if [ ! -d "${HOME}/trak/.git" ]; then
+              git clone https://github.com/Danyal-0276/TRAK-BACKEND.git "${HOME}/trak"
+            fi
+            cd "${HOME}/trak"
             git pull origin main
 
             echo "$READ_GHCR_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
