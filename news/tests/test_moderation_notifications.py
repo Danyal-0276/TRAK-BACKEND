@@ -6,14 +6,26 @@ from news.services.article_query import _doc_haystack
 
 
 class ModerationVisibilityTests(SimpleTestCase):
-    def test_approved_visible(self):
-        self.assertTrue(article_visible_to_users({"moderation_status": "approved"}))
+    def test_approved_real_visible(self):
+        self.assertTrue(
+            article_visible_to_users({"moderation_status": "approved", "credibility_label": 0})
+        )
+
+    def test_approved_fake_hidden(self):
+        self.assertFalse(
+            article_visible_to_users({"moderation_status": "approved", "credibility_label": 1})
+        )
+
+    def test_approved_suspicious_hidden(self):
+        self.assertFalse(
+            article_visible_to_users({"moderation_status": "approved", "credibility_label": 2})
+        )
 
     def test_review_hidden(self):
-        self.assertFalse(article_visible_to_users({"moderation_status": "review"}))
+        self.assertFalse(article_visible_to_users({"moderation_status": "review", "credibility_label": 0}))
 
     def test_rejected_hidden(self):
-        self.assertFalse(article_visible_to_users({"moderation_status": "rejected"}))
+        self.assertFalse(article_visible_to_users({"moderation_status": "rejected", "credibility_label": 0}))
 
     def test_real_auto_approved(self):
         doc = {"credibility_label": 0}
