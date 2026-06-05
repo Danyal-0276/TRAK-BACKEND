@@ -322,6 +322,21 @@ if _cors_origins:
     CORS_ALLOW_ALL_ORIGINS = False
     CORS_ALLOWED_ORIGINS = [o.strip() for o in _cors_origins.split(",") if o.strip()]
 
+# Local Vite (port 3000/5173) — login/signup fail in the browser if these are missing.
+if DEBUG and not CORS_ALLOW_ALL_ORIGINS:
+    _local_dev_cors = [
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+    ]
+    if _cors_origins:
+        CORS_ALLOWED_ORIGINS = list(
+            dict.fromkeys([*CORS_ALLOWED_ORIGINS, *_local_dev_cors])
+        )
+    else:
+        CORS_ALLOWED_ORIGINS = _local_dev_cors
+
 _csrf_trusted_origins = os.environ.get("CSRF_TRUSTED_ORIGINS", "").strip()
 if _csrf_trusted_origins:
     CSRF_TRUSTED_ORIGINS = [

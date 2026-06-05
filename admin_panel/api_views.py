@@ -209,6 +209,22 @@ class AdminArticlesView(APIView):
         return None
 
     @staticmethod
+    def _credibility_label_query(credibility_label: str) -> dict | None:
+        raw = str(credibility_label or "").strip().lower()
+        if not raw:
+            return None
+        label_map = {"fake": 1, "suspicious": 2, "real": 0, "0": 0, "1": 1, "2": 2}
+        if raw in label_map:
+            return {"credibility_label": label_map[raw]}
+        try:
+            idx = int(raw)
+            if idx in (0, 1, 2):
+                return {"credibility_label": idx}
+        except ValueError:
+            pass
+        return None
+
+    @staticmethod
     def _merge_queries(*parts: dict | None) -> dict:
         queries = [q for q in parts if q]
         if not queries:
@@ -241,8 +257,9 @@ class AdminArticlesView(APIView):
             or request.query_params.get("moderation")
             or ""
         )
+        credibility_label = request.query_params.get("credibility_label") or ""
         needs_review_filter = self._is_needs_review_filter(moderation_status)
-        if needs_review_filter:
+        if needs_review_filter or self._credibility_label_query(credibility_label):
             scope = "processed"
         skip = (page - 1) * page_size
 
@@ -254,6 +271,7 @@ class AdminArticlesView(APIView):
             query = self._merge_queries(
                 self._pipeline_query(pipeline_status),
                 self._moderation_query(moderation_status),
+                self._credibility_label_query(credibility_label),
             )
             ps_lower = str(pipeline_status or "").strip().lower()
             sort_dir = 1 if ps_lower in {"queue", "pending", "processing"} else -1
@@ -261,7 +279,10 @@ class AdminArticlesView(APIView):
             for doc in cursor:
                 results.append(_serialize_raw(doc))
         elif scope == "processed":
-            query = self._moderation_query(moderation_status) or {}
+            query = self._merge_queries(
+                self._moderation_query(moderation_status),
+                self._credibility_label_query(credibility_label),
+            )
             proc_docs = list(
                 proc_col.find(query).sort("processed_at", -1).skip(skip).limit(page_size)
             )
@@ -271,8 +292,12 @@ class AdminArticlesView(APIView):
             raw_query = self._merge_queries(
                 self._pipeline_query(pipeline_status),
                 self._moderation_query(moderation_status),
+                self._credibility_label_query(credibility_label),
             )
-            proc_query = self._moderation_query(moderation_status) or {}
+            proc_query = self._merge_queries(
+                self._moderation_query(moderation_status),
+                self._credibility_label_query(credibility_label),
+            )
             for doc in raw_col.find(raw_query).sort("fetched_at", -1).limit(half):
                 results.append(_serialize_raw(doc))
             proc_docs = list(
@@ -308,6 +333,7 @@ class AdminArticlesView(APIView):
             "scope": scope,
             "pipeline_status": str(pipeline_status or "").strip().lower() or None,
             "moderation_status": str(moderation_status or "").strip().lower() or None,
+            "credibility_label": str(credibility_label or "").strip().lower() or None,
             "counts": count_payload,
             "results": results,
         })
