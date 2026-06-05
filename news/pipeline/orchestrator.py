@@ -12,6 +12,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
+from bson import ObjectId
 from pymongo import ReturnDocument
 
 from news.credibility.inference import predict_credibility
@@ -274,6 +275,43 @@ def mark_raw_for_reprocess(*, include_failed: bool = True) -> int:
         {"$set": {"pipeline_status": "pending"}, "$unset": {"pipeline_error": ""}},
     )
     return int(result.modified_count)
+
+
+def requeue_failed_raw_by_id(article_id) -> bool:
+    """Move one failed raw article back to pending."""
+    try:
+        oid = ObjectId(str(article_id))
+    except Exception:
+        return False
+    col = raw_collection()
+    result = col.update_one(
+        {"_id": oid, "pipeline_status": "failed"},
+        {
+            "$set": {"pipeline_status": "pending"},
+            "$unset": {"pipeline_error": "", "processing_started_at": ""},
+        },
+    )
+    return bool(result.modified_count)
+
+
+def requeue_all_failed_raw() -> int:
+    """Move every failed raw article back to pending for another pipeline pass."""
+    col = raw_collection()
+    result = col.update_many(
+        {"pipeline_status": "failed"},
+        {
+            "$set": {"pipeline_status": "pending"},
+            "$unset": {"pipeline_error": "", "processing_started_at": ""},
+        },
+    )
+    return int(result.modified_count)
+
+
+def delete_all_failed_raw() -> int:
+    """Permanently remove all raw articles stuck in pipeline_status=failed."""
+    col = raw_collection()
+    result = col.delete_many({"pipeline_status": "failed"})
+    return int(result.deleted_count)
 
 
 def _process_claimed_raw(doc: dict) -> dict[str, Any]:

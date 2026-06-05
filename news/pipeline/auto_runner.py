@@ -232,6 +232,7 @@ def should_start_auto_pipeline() -> bool:
         "shell",
         "run_ai_pipeline",
         "run_news_cycle",
+        "run_scheduled_scrape",
         "scrape_raw_news",
         "run_pipeline_daemon",
         "makemigrations",

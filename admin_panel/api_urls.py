@@ -6,6 +6,7 @@ urlpatterns = [
     path("articles/lookup/", api_views.AdminArticleLookupView.as_view(), name="admin-article-lookup"),
     path("articles/image-proxy/", api_views.AdminArticleImageProxyView.as_view(), name="admin-article-image-proxy"),
     path("articles/", api_views.AdminArticlesView.as_view(), name="admin-articles"),
+    path("articles/failed/bulk/", api_views.AdminFailedArticlesBulkView.as_view(), name="admin-failed-articles-bulk"),
     path("articles/<str:scope>/<str:article_id>/", api_views.AdminArticleDetailView.as_view(), name="admin-article-detail"),
     path("analytics/", api_views.AdminAnalyticsView.as_view(), name="admin-analytics"),
     path("model-metrics/", api_views.AdminModelMetricsView.as_view(), name="admin-model-metrics"),

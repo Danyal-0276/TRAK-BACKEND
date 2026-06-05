@@ -120,7 +120,7 @@ def _parse_percent_value(val: Any) -> float | None:
 
 def _try_parse_fake_news_detection_space(data: list | tuple) -> dict[str, Any] | None:
     """
-    abd8433/fake-news-detection returns:
+    abd8433/TRAK-Fake-Detection-Model returns:
       (verdict, real_confidence_str, fake_confidence_str, news_info, debug)
     """
     if len(data) < 3:

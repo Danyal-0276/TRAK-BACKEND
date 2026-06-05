@@ -13,9 +13,11 @@ from django.conf import settings
 from django.contrib.auth import get_user_model
 
 from news.chatbot.intents import (
+    GREETING_REPLY,
     IDENTITY_REPLY,
     NO_MATCH_REPLY,
     OFF_TOPIC_REPLY,
+    get_greeting_reply,
     article_matches_terms,
     article_relevance_score,
     build_search_query,
@@ -25,6 +27,7 @@ from news.chatbot.intents import (
     filter_relevant_articles,
     has_news_intent,
     is_off_topic_message,
+    resolve_search_message,
     should_link_article,
 )
 from news.services import article_query
@@ -38,14 +41,19 @@ SYSTEM_INSTRUCTION = """You are TRAK AI Assistant inside the TRAK news applicati
 
 Identity: Built by the TRAK team. If asked who made you, say the TRAK team.
 
-Rules:
+Voice & style:
+- Sound like a sharp newsroom assistant: clear, direct, conversational.
+- Lead with the answer to what the user asked — do not open with filler ("Certainly!", "Great question!").
+- Use plain English. Short sentences. No markdown headings or bullet lists unless summarizing.
+
+Grounding rules:
 1. Use ONLY the TRAK article context provided in each user turn.
 2. NEVER output http:// or https:// links or tell users to visit external websites.
 3. When TRAK has matching articles, the app shows article cards below your message — do NOT repeat article titles, sources, or long summaries in your text.
-4. For matching articles: write at most 1-2 short sentences with a thematic overview only (e.g. what the stories are about). The UI already introduces them as "articles I found".
+4. For matching articles: write 1-2 sentences that capture the main theme, region, or development (who/what/why at a high level). The UI already introduces them as "articles I found".
 5. If no relevant articles in context, say TRAK does not have that story yet; do not claim loose matches.
 6. If the user asks about coding, homework, recipes, jokes, or other non-news topics, say you only help with news and suggest a news question — do not invent related articles.
-7. Plain text, friendly, concise. No markdown headings.
+7. If the user asks a follow-up ("tell me more", "what else"), use conversation history plus article context to stay on topic.
 """
 
 OFF_TOPIC_GEMINI_INSTRUCTION = """You are TRAK AI in the TRAK news app, created by the TRAK team.
@@ -71,6 +79,19 @@ The user is asking about you. In 2-3 friendly sentences:
 - Do not credit Google, Gemini, or OpenAI
 - Invite them to ask a news question
 Plain text, no URLs."""
+
+GREETING_GEMINI_INSTRUCTION = """You are TRAK AI in the TRAK news app, built by the TRAK team.
+
+The user sent a short greeting, thanks, or goodbye — not a news question yet.
+This includes casual slang (wassup, wagwan, yo, ayo, wsg, what's good, salaam, etc.).
+
+Reply warmly in 1-3 sentences:
+- Match their tone (hi → welcome; slang → casual but friendly; thanks → you're welcome; bye → friendly sign-off)
+- Mention you help with headlines and stories inside TRAK
+- Invite them to ask a news question with one brief example
+
+Do NOT search for articles, claim specific stories exist, or include URLs.
+Plain text only."""
 
 
 class ChatbotConfigError(Exception):
@@ -117,17 +138,25 @@ def serialize_chat_article(article: dict | None) -> Optional[dict]:
     }
 
 
-def gather_news_context(user: User, message: str, *, limit: int = 8) -> tuple[list[dict], str]:
+def gather_news_context(
+    user: User,
+    message: str,
+    *,
+    limit: int = 8,
+    history: list[dict] | None = None,
+) -> tuple[list[dict], str]:
     """
     Load articles from TRAK MongoDB.
     Returns (articles, intent) where intent includes off_topic when not news-related.
     """
-    intent = detect_intent(message)
-    if intent in ("identity", "off_topic"):
+    intent = detect_intent(message, history=history)
+    if intent in ("identity", "off_topic", "greeting"):
         return [], intent
 
+    effective = resolve_search_message(message, history)
+
     if intent == "summarize":
-        search_q = build_search_query(message)
+        search_q = build_search_query(message, history=history)
         seen: set[str] = set()
         merged: list[dict] = []
 
@@ -152,23 +181,23 @@ def gather_news_context(user: User, message: str, *, limit: int = 8) -> tuple[li
 
         ranked = sorted(
             merged,
-            key=lambda a: article_relevance_score(message, a),
+            key=lambda a: article_relevance_score(effective, a),
             reverse=True,
         )
-        relevant = filter_relevant_articles(message, ranked)
+        relevant = filter_relevant_articles(effective, ranked)
         if not relevant:
             return [], classify_empty_result(message, had_search_hits=bool(ranked))
         return relevant[:limit], intent
 
     if intent == "headlines":
-        terms = extract_search_terms(message)
+        terms = extract_search_terms(effective)
         recent = article_query.get_recent_processed_articles(limit=limit * 2)
         if terms:
             filtered = [a for a in recent if article_matches_terms(a, terms)]
             return (filtered or recent)[:limit], intent
         return recent[:limit], intent
 
-    search_q = build_search_query(message)
+    search_q = build_search_query(message, history=history)
     seen: set[str] = set()
     merged: list[dict] = []
 
@@ -191,10 +220,10 @@ def gather_news_context(user: User, message: str, *, limit: int = 8) -> tuple[li
 
     ranked = sorted(
         merged,
-        key=lambda a: article_relevance_score(message, a),
+        key=lambda a: article_relevance_score(effective, a),
         reverse=True,
     )
-    relevant = filter_relevant_articles(message, ranked)
+    relevant = filter_relevant_articles(effective, ranked)
     if not relevant:
         return [], classify_empty_result(message, had_search_hits=bool(ranked))
     return relevant[:limit], intent
@@ -236,10 +265,19 @@ def _format_articles_block(articles: list[dict], intent: str) -> str:
         summary = str(art.get("summary") or art.get("excerpt") or "").strip()
         if len(summary) > 450:
             summary = summary[:447] + "..."
+        topic_kw = ", ".join(str(k) for k in (art.get("topic_keywords") or [])[:6])
+        category = str(art.get("category") or "").strip()
+        meta = []
+        if category:
+            meta.append(f"Category: {category}")
+        if topic_kw:
+            meta.append(f"Topics: {topic_kw}")
+        meta_line = "\n".join(meta)
         blocks.append(
             f"[{i}] id={art.get('id')}\n"
             f"Title: {title}\n"
             f"Source: {source}\n"
+            f"{meta_line + chr(10) if meta_line else ''}"
             f"Summary: {summary or '(no summary)'}"
         )
     if intent == "headlines":
@@ -251,7 +289,19 @@ def _format_articles_block(articles: list[dict], intent: str) -> str:
     return f"{header}\n\n" + "\n\n".join(blocks)
 
 
-def _history_to_gemini(history: list[dict], *, max_turns: int = 5) -> list[dict[str, Any]]:
+def _gemini_generation_config():
+    try:
+        import google.generativeai as genai
+    except ImportError:
+        return None
+    return genai.types.GenerationConfig(
+        temperature=0.65,
+        top_p=0.92,
+        max_output_tokens=600,
+    )
+
+
+def _history_to_gemini(history: list[dict], *, max_turns: int = 6) -> list[dict[str, Any]]:
     trimmed = history[-(max_turns * 2) :]
     out: list[dict[str, Any]] = []
     for row in trimmed:
@@ -570,11 +620,12 @@ def _run_gemini_reply(
                 model_name=model_name,
                 system_instruction=system_instruction,
             )
+            gen_cfg = _gemini_generation_config()
             if gemini_history:
                 chat = model.start_chat(history=gemini_history)
-                response = chat.send_message(user_prompt)
+                response = chat.send_message(user_prompt, generation_config=gen_cfg)
             else:
-                response = model.generate_content(user_prompt)
+                response = model.generate_content(user_prompt, generation_config=gen_cfg)
             text = sanitize_bot_reply((response.text or "").strip())
             if text:
                 return text
@@ -620,16 +671,35 @@ def generate_identity_reply(
     )
 
 
+def generate_greeting_reply(
+    user_message: str,
+    history: list[dict] | None = None,
+) -> str:
+    """Gemini-generated warm reply for hi/thanks/bye (no article search)."""
+    prompt = f"The user said:\n{user_message.strip()}\n\nReply as TRAK AI."
+    return _run_gemini_reply(
+        user_message,
+        system_instruction=GREETING_GEMINI_INSTRUCTION,
+        user_prompt=prompt,
+        history=history,
+        fallback=get_greeting_reply(user_message),
+    )
+
+
 def generate_no_match_reply(
     user_message: str,
     history: list[dict] | None = None,
 ) -> str:
     """Gemini reply when TRAK has no articles for a valid news question."""
+    terms = extract_search_terms(user_message)
+    hint = f" Keywords tried: {', '.join(terms)}." if terms else ""
     prompt = (
         f"The user asked a news question but TRAK has no matching articles in the database:\n"
         f"{user_message.strip()}\n\n"
-        "Say TRAK does not have that story yet. Suggest different keywords or the feed. "
-        "Do not invent articles. 2-3 sentences. No URLs."
+        f"{hint}\n"
+        "Say TRAK does not have that story yet. Suggest 1-2 alternate search angles "
+        "(related region, person, or topic) they could try. Do not invent articles. "
+        "2-3 sentences. No URLs."
     )
     instruction = (
         SYSTEM_INSTRUCTION
@@ -666,25 +736,27 @@ def generate_chatbot_reply(
     context_block = _format_articles_block(articles, intent)
     if intent == "summarize":
         match_note = (
-            "The user wants a SUMMARY. Write exactly ONE short paragraph (4–6 sentences) "
-            "that synthesizes the main news across ALL articles above. "
-            "Cover key facts and themes only from the provided text. "
+            "The user wants a SUMMARY. Write exactly ONE paragraph (4–6 sentences) in newsroom style. "
+            "Open with the biggest takeaway, then cover supporting facts and themes from ALL articles. "
+            "Use present tense for recent events. Cover key facts only from the provided text. "
             "Do NOT list article titles or sources. Do NOT mention tapping cards or TRAK UI. "
             "Do NOT include URLs. Output only the summary paragraph."
         )
     elif intent == "headlines":
         match_note = (
-            "Headline request. Write 1 short sentence about the overall theme only. "
-            "Do NOT list titles — cards appear below."
+            "Headline request. Write 1-2 sentences: what is dominating the news right now "
+            "(theme or region). Do NOT list titles — cards appear below."
         )
     elif has_db_match and articles:
         match_note = (
-            "Strong TRAK matches exist. Write 1-2 sentences: thematic overview only. "
+            "Strong TRAK matches exist. Answer the user's question in the first sentence, "
+            "then add one sentence of broader context if helpful. "
             "Do NOT repeat titles, sources, or summaries — article cards show below."
         )
     elif articles:
         match_note = (
-            "Loose matches only. Say they may not be exact, 1-2 sentences max, no titles."
+            "Loose matches only. Briefly note they may not be exact, then give a 1-sentence thematic hint. "
+            "No titles."
         )
     else:
         match_note = "No TRAK articles — say TRAK does not have this story yet."
@@ -692,7 +764,7 @@ def generate_chatbot_reply(
     user_prompt = (
         f"{context_block}\n\n"
         f"Instructions: {match_note}\n\n"
-        f"User: {user_message.strip()}"
+        f"User question (reply to this directly): {user_message.strip()}"
     )
 
     gemini_history = _history_to_gemini(history or [])
@@ -705,7 +777,10 @@ def generate_chatbot_reply(
                 system_instruction=SYSTEM_INSTRUCTION,
             )
             chat = model.start_chat(history=gemini_history)
-            response = chat.send_message(user_prompt)
+            response = chat.send_message(
+                user_prompt,
+                generation_config=_gemini_generation_config(),
+            )
             text = sanitize_bot_reply((response.text or "").strip())
             if text:
                 return text

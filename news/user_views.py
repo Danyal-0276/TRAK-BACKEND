@@ -1,3 +1,4 @@
+import threading
 from datetime import datetime, timezone
 
 from rest_framework import permissions, status
@@ -27,9 +28,11 @@ from news.chatbot import (
     gather_news_context,
     generate_chatbot_reply,
     finalize_reply_with_article_cards,
+    generate_greeting_reply,
     generate_identity_reply,
     generate_no_match_reply,
     generate_off_topic_reply,
+    get_greeting_reply,
     get_identity_reply,
     get_no_match_reply,
     get_off_topic_reply,
@@ -39,7 +42,12 @@ from news.chatbot import (
     sanitize_bot_reply,
     serialize_chat_article,
 )
-from news.chatbot.intents import detect_intent, has_news_intent, is_off_topic_message
+from news.chatbot.intents import (
+    detect_intent,
+    has_news_intent,
+    is_off_topic_message,
+    resolve_search_message,
+)
 from news.feedback_constants import FEEDBACK_CATEGORIES
 
 
@@ -175,6 +183,26 @@ class UserKeywordsView(APIView):
         return Response({"keywords": keywords})
 
 
+def _schedule_keyword_alert_backfill(user) -> None:
+    """Run keyword notification backfill off the request thread so saves return quickly."""
+    user_id = getattr(user, "pk", None)
+    if user_id is None:
+        return
+
+    def _run() -> None:
+        try:
+            from django.contrib.auth import get_user_model
+            from news.notifications.keyword_alerts import notify_keyword_matches_for_user_recent
+
+            u = get_user_model().objects.filter(pk=user_id).first()
+            if u:
+                notify_keyword_matches_for_user_recent(u, hours=168, limit=200)
+        except Exception:
+            pass
+
+    threading.Thread(target=_run, daemon=True).start()
+
+
 class TrackKeywordsView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
@@ -186,14 +214,7 @@ class TrackKeywordsView(APIView):
             return Response({"detail": "keywords must be a list"}, status=status.HTTP_400_BAD_REQUEST)
         try:
             payload = article_query.upsert_user_keywords(request.user, keywords)
-            try:
-                from news.notifications.keyword_alerts import notify_keyword_matches_for_user_recent
-
-                notify_keyword_matches_for_user_recent(
-                    request.user, hours=168, limit=200
-                )
-            except Exception:
-                pass
+            _schedule_keyword_alert_backfill(request.user)
             return Response(payload, status=status.HTTP_200_OK)
         except Exception as exc:
             return Response(
@@ -383,7 +404,27 @@ class ChatbotView(APIView):
         history_row = chatbot_history_collection().find_one({"user_id": request.user.pk}) or {}
         prior_messages = history_row.get("messages") or []
 
-        if is_off_topic_message(message):
+        if detect_intent(message) == "greeting":
+            try:
+                reply = (
+                    generate_greeting_reply(message, prior_messages)
+                    if is_chatbot_configured()
+                    else get_greeting_reply(message)
+                )
+            except ChatbotAPIError:
+                reply = get_greeting_reply(message)
+            payload = {
+                "reply": sanitize_bot_reply(reply),
+                "articles": [],
+                "primary_article": None,
+                "has_trak_article": False,
+                "intent": "greeting",
+                "powered_by": "gemini" if is_chatbot_configured() else "local",
+            }
+            _append_chatbot_history(request.user.pk, message, payload["reply"], None)
+            return Response(payload)
+
+        if is_off_topic_message(message, history=prior_messages):
             try:
                 reply = (
                     generate_off_topic_reply(message, prior_messages)
@@ -403,12 +444,19 @@ class ChatbotView(APIView):
             _append_chatbot_history(request.user.pk, message, payload["reply"], None)
             return Response(payload)
 
-        ctx_limit = 8 if detect_intent(message) != "summarize" else 6
-        articles, intent = gather_news_context(request.user, message, limit=ctx_limit)
-        primary = pick_primary_article(message, articles)
+        intent = detect_intent(message, history=prior_messages)
+        ctx_limit = 8 if intent != "summarize" else 6
+        articles, intent = gather_news_context(
+            request.user,
+            message,
+            limit=ctx_limit,
+            history=prior_messages,
+        )
+        search_message = resolve_search_message(message, prior_messages)
+        primary = pick_primary_article(search_message, articles)
         if intent == "headlines" and articles and not primary:
             primary = articles[0]
-        db_match = has_strong_article_match(message, primary)
+        db_match = has_strong_article_match(search_message, primary)
 
         if intent == "identity":
             try:
@@ -451,7 +499,7 @@ class ChatbotView(APIView):
             return Response(payload)
 
         if intent in ("no_match", "off_topic") or not articles:
-            is_off = intent == "off_topic" or not has_news_intent(message)
+            is_off = intent == "off_topic" or not has_news_intent(message, history=prior_messages)
             try:
                 if is_off:
                     reply = (
@@ -522,7 +570,7 @@ class ChatbotView(APIView):
         else:
             linkable = []
             for art in articles[:3]:
-                if has_strong_article_match(message, art):
+                if has_strong_article_match(search_message, art):
                     row = serialize_chat_article(art)
                     if row:
                         linkable.append(row)

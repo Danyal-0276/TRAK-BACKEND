@@ -524,6 +524,20 @@ PIPELINE_AUTO_LOCK_TTL_SECONDS = max(
     300, int(os.environ.get("PIPELINE_AUTO_LOCK_TTL_SECONDS", "7200"))
 )
 
+# Scheduled scrape + pipeline (background thread or cron — see news/schedule/scrape_scheduler.py)
+SCRAPE_SCHEDULE_ENABLED = os.environ.get("SCRAPE_SCHEDULE_ENABLED", "true").strip().lower() in (
+    "true",
+    "1",
+    "yes",
+    "on",
+)
+# Fixed policy for the scheduled scraper (see news/schedule/scrape_scheduler.py).
+SCRAPE_SCHEDULE_INTERVAL_HOURS = 24
+SCRAPE_SCHEDULE_TOTAL_LIMIT = 100
+SCRAPE_SCHEDULE_LOCK_TTL_SECONDS = max(
+    3600, int(os.environ.get("SCRAPE_SCHEDULE_LOCK_TTL_SECONDS", "10800"))
+)
+
 # BART news summarizer (HF Space preferred; Hub id is fallback when SUMMARIZER_SPACE_ID unset)
 SUMMARIZER_MODEL_ID = os.environ.get("SUMMARIZER_MODEL_ID", "").strip() or None
 SUMMARIZER_ENABLED = os.environ.get("SUMMARIZER_ENABLED", "true").strip()

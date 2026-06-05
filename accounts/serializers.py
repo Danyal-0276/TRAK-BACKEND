@@ -1,4 +1,5 @@
 from django.contrib.auth.password_validation import validate_password
+from django.utils import timezone
 from rest_framework import serializers
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
 
@@ -113,6 +114,13 @@ class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
             from notifications.reengagement import maybe_welcome_back_notification
 
             maybe_welcome_back_notification(self.user, previous_last_login=prev_last_login)
+        except Exception:
+            pass
+
+        try:
+            now = timezone.now()
+            User.objects.filter(pk=self.user.pk).update(last_login=now)
+            self.user.last_login = now
         except Exception:
             pass
 

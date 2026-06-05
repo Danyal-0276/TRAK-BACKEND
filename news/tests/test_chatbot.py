@@ -4,8 +4,15 @@ from news.chatbot.intents import (
     build_search_query,
     classify_empty_result,
     detect_intent,
+    expand_search_terms,
     extract_search_terms,
+    get_greeting_reply,
     has_news_intent,
+    is_follow_up_message,
+    is_greeting_message,
+    is_off_topic_message,
+    normalize_user_message,
+    resolve_search_message,
     should_link_article,
 )
 from news.chatbot.gemini_chat import (
@@ -31,10 +38,43 @@ class ChatbotIntentTests(SimpleTestCase):
         self.assertEqual(detect_intent("Summarize Pakistan news"), "summarize")
         self.assertEqual(detect_intent("Give me a summary of tech headlines"), "summarize")
 
+    def test_greeting_intent(self):
+        self.assertTrue(is_greeting_message("Hello"))
+        self.assertTrue(is_greeting_message("hi"))
+        self.assertTrue(is_greeting_message("hi there"))
+        self.assertTrue(is_greeting_message("thank you"))
+        self.assertTrue(is_greeting_message("good morning"))
+        self.assertEqual(detect_intent("Hello"), "greeting")
+        self.assertEqual(detect_intent("hi"), "greeting")
+        self.assertEqual(detect_intent("Hey!"), "greeting")
+        self.assertFalse(has_news_intent("hi"))
+        self.assertFalse(has_news_intent("hello"))
+        self.assertIn("TRAK", get_greeting_reply("hi"))
+        self.assertFalse(is_greeting_message("hi pakistan news"))
+
+    def test_slang_greeting_intent(self):
+        for msg in (
+            "wassup",
+            "wagwan",
+            "wagwan fam",
+            "ayo",
+            "yooo",
+            "wsg",
+            "what's good",
+            "salam",
+            "assalamu alaikum",
+            "gm",
+            "peace out",
+        ):
+            with self.subTest(msg=msg):
+                self.assertTrue(is_greeting_message(msg), msg)
+                self.assertEqual(detect_intent(msg), "greeting", msg)
+                self.assertFalse(has_news_intent(msg), msg)
+        self.assertFalse(is_greeting_message("wagwan pakistan news"))
+
     def test_off_topic_intent(self):
         self.assertEqual(detect_intent("Write me a python function"), "off_topic")
         self.assertEqual(detect_intent("Tell me a joke"), "off_topic")
-        self.assertEqual(detect_intent("Hello"), "off_topic")
         self.assertEqual(detect_intent("write me an essay"), "off_topic")
         self.assertEqual(detect_intent("write me an eassy"), "off_topic")
         self.assertFalse(has_news_intent("write me an essay"))
@@ -58,11 +98,52 @@ class ChatbotIntentTests(SimpleTestCase):
     def test_extract_terms(self):
         terms = extract_search_terms("Summarize Pakistan news")
         self.assertIn("pakistan", terms)
+        self.assertIn("news", terms)
+
+    def test_extract_multi_word_topics(self):
+        terms = extract_search_terms("world news")
+        self.assertIn("world", terms)
+        self.assertIn("news", terms)
+        terms2 = extract_search_terms("pakistan cricket")
+        self.assertIn("pakistan", terms2)
+        self.assertIn("cricket", terms2)
+
+    def test_greeting_with_news_not_off_topic(self):
+        from news.chatbot.intents import is_off_topic_message
+
+        self.assertFalse(is_off_topic_message("hi pakistan news"))
+        self.assertEqual(detect_intent("hi pakistan news"), "search")
 
     def test_build_search_query(self):
         q = build_search_query("Tell me about Apple earnings report")
         self.assertIn("apple", q)
         self.assertIn("earnings", q)
+        self.assertIn("news", build_search_query("world news"))
+
+    def test_normalize_typos(self):
+        self.assertIn("pakistan", normalize_user_message("pakisthan economy").lower())
+
+    def test_quoted_phrase_search(self):
+        q = build_search_query('Latest on "Pakistan elections"')
+        self.assertIn("Pakistan elections", q)
+
+    def test_expand_aliases(self):
+        expanded = expand_search_terms(["uk", "tech"])
+        self.assertIn("britain", expanded)
+        self.assertIn("technology", expanded)
+
+    def test_follow_up_intent_and_search(self):
+        history = [
+            {"role": "user", "text": "Pakistan economy news"},
+            {"role": "bot", "text": "Here are articles..."},
+        ]
+        self.assertTrue(is_follow_up_message("tell me more"))
+        self.assertEqual(detect_intent("tell me more", history=history), "search")
+        self.assertFalse(is_off_topic_message("tell me more", history=history))
+        self.assertTrue(has_news_intent("tell me more", history=history))
+        resolved = resolve_search_message("tell me more", history)
+        self.assertIn("pakistan", resolved.lower())
+        self.assertIn("economy", resolved.lower())
 
     def test_should_link(self):
         art = {"title": "Pakistan economy grows amid reforms", "summary": "Islamabad..."}

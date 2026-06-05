@@ -97,7 +97,7 @@ def _matches_feed_filters(
         if not any(_keyword_matches_hay(k, hay) for k in user_keywords):
             return False
     q = (search_q or "").strip().lower()
-    if q and q not in hay:
+    if q and not _search_matches_hay(hay, q):
         return False
     return True
 
@@ -207,6 +207,29 @@ def hydrate_article_reaction_counts(items: list[dict]) -> None:
         it["like_count"] = t["likes"]
         it["dislike_count"] = t["dislikes"]
         it["upvotes"] = t["likes"]
+
+
+def _search_query_tokens(search_q: str) -> list[str]:
+    q = (search_q or "").strip().lower()
+    if not q:
+        return []
+    return [w for w in re.findall(r"[a-z0-9]+", q) if len(w) >= 2][:8]
+
+
+def _search_matches_hay(hay: str, search_q: str) -> bool:
+    """True when full phrase or every query token appears in article text."""
+    q = (search_q or "").strip().lower()
+    if not q:
+        return True
+    blob = (hay or "").lower()
+    if q in blob:
+        return True
+    tokens = _search_query_tokens(q)
+    if not tokens:
+        return q in blob
+    if len(tokens) == 1:
+        return tokens[0] in blob
+    return all(t in blob for t in tokens)
 
 
 def _search_filter_clause(q: str) -> dict:
@@ -610,7 +633,7 @@ def get_pics_feed_page(
         filtered: list[dict] = []
         for doc in docs:
             hay = _doc_haystack(doc)
-            if q not in hay:
+            if not _search_matches_hay(hay, q):
                 continue
             filtered.append(doc)
 
@@ -692,7 +715,7 @@ def get_explore_feed_page(
             if not article_visible_to_users(doc):
                 continue
             hay = _doc_haystack(doc)
-            if q not in hay:
+            if not _search_matches_hay(hay, q):
                 continue
             filtered.append(doc)
 
