@@ -23,7 +23,7 @@ services:
       - "8000:8000"
     volumes:
       - ./.env:/app/.env:ro
-      # Optional FCM: - ./firebase-service-account.json:/app/firebase-service-account.json:ro
+      - ./firebase-service-account.json:/app/firebase-service-account.json:ro
     environment:
       DJANGO_ALLOWED_HOSTS: ${DJANGO_ALLOWED_HOSTS:-localhost,127.0.0.1,0.0.0.0}
       # With --profile localdb, set in .env: MONGODB_URI=mongodb://mongodb:27017, REDIS_URL=redis://redis:6379/0, USE_REDIS=true

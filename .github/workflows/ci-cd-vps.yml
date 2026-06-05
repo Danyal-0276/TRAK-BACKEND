@@ -1,6 +1,6 @@
 # TRAK_Backend repo CI/CD — build API image, deploy to VPS.
 # Secrets: VPS_HOST, VPS_USER, VPS_SSH_KEY, READ_GHCR_TOKEN
-# Server: .env on VPS (never commit).
+# Server: .env at ~/trak/.env on VPS (never commit). App dir: /home/<VPS_USER>/trak
 
 name: CI-CD VPS Deploy
 
@@ -94,8 +94,10 @@ jobs:
           script_stop: true
           script: |
             set -e
-            cd /opt/trak
-
+            if [ ! -d "${HOME}/trak/.git" ]; then
+              git clone https://github.com/Danyal-0276/TRAK-BACKEND.git "${HOME}/trak"
+            fi
+            cd "${HOME}/trak"
             git pull origin main
 
             echo "$READ_GHCR_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
@@ -107,7 +109,20 @@ jobs:
 
             docker image prune -f
 
-            curl -fsS http://127.0.0.1:8000/api/accounts/health/ || (docker compose logs --tail=80 api && exit 1)
+            # Migrations + Daphne need ~30–90s after recreate; immediate curl fails.
+            echo "Waiting for API health..."
+            for i in $(seq 1 36); do
+              if curl -fsS http://127.0.0.1:8000/api/accounts/health/ >/dev/null 2>&1; then
+                curl -fsS http://127.0.0.1:8000/api/accounts/health/
+                echo ""
+                echo "Health check OK."
+                exit 0
+              fi
+              sleep 5
+            done
+            echo "Health check timed out after 3 minutes."
+            docker compose logs --tail=80 api
+            exit 1
         env:
           GHCR_OWNER: ${{ steps.owner.outputs.value }}
           IMAGE_TAG: ${{ github.sha }}

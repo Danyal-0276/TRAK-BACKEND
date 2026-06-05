@@ -35,24 +35,30 @@ docker compose down
 
 ## 2. One-time VPS setup
 
-```bash
-# On the VPS (Ubuntu)
-sudo apt update && sudo apt install -y git docker.io docker-compose-plugin nginx certbot python3-certbot-nginx
-sudo usermod -aG docker $USER   # re-login after this
+App directory: **`~/trak`** (`/home/<user>/trak`) — no sudo required.
 
-sudo mkdir -p /opt/trak
-sudo chown $USER:$USER /opt/trak
-git clone https://github.com/Danyal-0276/TRAK-BACKEND.git /opt/trak
-cd /opt/trak
+```bash
+# On the VPS (Ubuntu) — user must be in the docker group (re-login after usermod)
+docker ps
+
+mkdir -p ~/trak
+git clone https://github.com/Danyal-0276/TRAK-BACKEND.git ~/trak
+cd ~/trak
 git checkout main
 ```
 
-### Server `.env` (your friend’s rule: keep secrets on the server)
+From your PC (PowerShell), copy `.env`:
+
+```powershell
+scp C:\Users\donib\Documents\TRAK\Backend\TRAK_Backend\.env shahroz@167.86.110.151:~/trak/.env
+```
+
+### Server `.env` (keep secrets on the server only)
 
 ```bash
-cd /opt/trak
-cp .env.example .env   # or scp your local .env
-nano .env
+cd ~/trak
+chmod 600 .env
+nano .env   # or use scp from PC (above)
 ```
 
 Production tweaks in `.env`:
@@ -66,6 +72,14 @@ PASSWORD_RESET_FRONTEND_URL=https://trak-flax.vercel.app/reset-password
 SOCIAL_AUTH_FRONTEND_URL=https://trak-flax.vercel.app/login
 MONGODB_URI=mongodb+srv://...
 # FIREBASE: paste JSON or mount firebase-service-account.json
+```
+
+Atlas **Network Access**: allow the VPS IP (e.g. `167.86.110.151`).
+
+```bash
+cd ~/trak
+docker compose up -d --build
+curl http://127.0.0.1:8000/api/accounts/health/
 ```
 
 Optional FCM mount in `docker-compose.yml`:
@@ -104,11 +118,11 @@ After first successful build, open **Packages** on GitHub → `trak-api` → **P
 | `api/` + `web/` pnpm | `Backend/TRAK_Backend` + `TRAK/web` npm |
 | Docker API + Docker Next web | **Docker API only** |
 | Deploy both images | Deploy **trak-api** only |
-| `.env` on server | Same — `/opt/trak/Backend/TRAK_Backend/.env` |
+| `.env` on server | `~/trak/.env` |
 
-On **pull request**: runs `verify-backend` + `verify-web` (no deploy).
+On **pull request**: runs `verify-backend` only (no deploy).
 
-On **push to main**: builds `ghcr.io/<owner>/trak-api:<sha>`, SSHs to VPS, `git pull`, sets `API_IMAGE=...`, `docker compose up --no-build`.
+On **push to main**: builds `ghcr.io/<owner>/trak-api:<sha>`, SSHs to VPS, `cd ~/trak`, `git pull`, sets `API_IMAGE=...`, `docker compose up --no-build`.
 
 ---
 
@@ -116,7 +130,7 @@ On **push to main**: builds `ghcr.io/<owner>/trak-api:<sha>`, SSHs to VPS, `git 
 
 ```bash
 ssh user@vps
-cd /opt/trak/Backend/TRAK_Backend
+cd ~/trak
 export GHCR_OWNER=your-github-username-lowercase
 export IMAGE_TAG=<commit-sha>
 echo $READ_GHCR_TOKEN | docker login ghcr.io -u <github-user> --password-stdin
