@@ -12,7 +12,8 @@ from news.credibility.score import (
     effective_credibility_probs,
 )
 from news.article_media import article_image_url, hydrate_processed_image_urls
-from news.category_matching import interest_matches_hay, user_follows_all_categories
+from news.article_text import sanitize_article_body, sanitize_article_summary
+from news.category_matching import article_matches_category, interest_matches_hay, user_follows_all_categories
 from news.moderation_rules import article_visible_to_users, user_feed_visibility_clause
 from news.mongo_db import processed_collection, raw_collection, reactions_collection, user_keywords_collection
 from news.services.feed_cache import explore_cache_key, get_cached_explore, set_cached_explore
@@ -116,11 +117,19 @@ def article_to_api_dict(doc: dict, *, for_list: bool = False) -> dict:
     """Shape for mobile/web clients. Processed documents only — no raw_articles."""
     cid = _oid_str(doc)
     title = doc.get("title") or ""
-    summary = _article_card_summary(doc)
-    full_text = _article_full_text(doc)
+    full_text = sanitize_article_body(_article_full_text(doc), title=title)
+    summary = sanitize_article_summary(
+        _article_card_summary(doc),
+        title=title,
+        body=full_text,
+    )
     if not summary and full_text:
         parts = re.split(r"(?<=[.!?])\s+", full_text.strip())
-        summary = " ".join(parts[:2]) if parts else full_text[:400]
+        summary = sanitize_article_summary(
+            " ".join(parts[:2]) if parts else full_text[:400],
+            title=title,
+            body=full_text,
+        )
     source = doc.get("source_key") or ""
     published = doc.get("published_at")
     if isinstance(published, datetime):
@@ -665,13 +674,15 @@ def get_explore_feed_page(
     *,
     limit: int = 30,
     search_q: str = "",
+    category: str = "",
     cursor: Optional[str] = None,
 ) -> dict[str, Any]:
-    """Cursor-based Explore page for infinite scrolling (processed_articles only)."""
+    """Cursor-based Explore page; optional category slug filters matches."""
     q = (search_q or "").strip().lower()
+    cat = (category or "").strip()
     page_size = max(1, min(int(limit or 30), 200))
     cache_key = explore_cache_key(limit=page_size, q=q, cursor=cursor)
-    if not q and not cursor:
+    if not q and not cat and not cursor:
         cached = get_cached_explore(cache_key)
         if cached is not None:
             return cached
@@ -702,7 +713,7 @@ def get_explore_feed_page(
         _hydrate_docs_images(docs)
         docs = [d for d in docs if article_visible_to_users(d)]
 
-        if not q:
+        if not q and not cat:
             ranked_batch = _rank_for_diversity(docs[:page_size], now, take=page_size)
             for doc in ranked_batch:
                 out.append(article_to_api_dict(doc, for_list=True))
@@ -714,9 +725,12 @@ def get_explore_feed_page(
             last_seen_doc = doc
             if not article_visible_to_users(doc):
                 continue
-            hay = _doc_haystack(doc)
-            if not _search_matches_hay(hay, q):
+            if cat and not article_matches_category(doc, cat):
                 continue
+            if q:
+                hay = _doc_haystack(doc)
+                if not _search_matches_hay(hay, q):
+                    continue
             filtered.append(doc)
 
         _hydrate_docs_images(filtered)
@@ -741,11 +755,11 @@ def get_explore_feed_page(
 
     next_cursor = _cursor_payload_from_doc(last_seen_doc or {})
     has_more = bool(next_cursor and last_batch_len >= batch_size)
-    if has_more and not q and len(out) < page_size:
+    if has_more and not q and not cat and len(out) < page_size:
         has_more = last_batch_len >= batch_size
 
     hydrate_article_reaction_counts(out)
     page = {"results": out, "next_cursor": next_cursor if has_more else None, "has_more": has_more}
-    if not q and not cursor:
+    if not q and not cat and not cursor:
         set_cached_explore(cache_key, page)
     return page

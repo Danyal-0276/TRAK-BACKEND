@@ -86,6 +86,46 @@ def count_main_categories_selected(keywords: list[str]) -> int:
     return count
 
 
+def article_haystack(doc: dict) -> str:
+    """Processed article text blob for category matching (aligned with web categoryMatch.js)."""
+    parts: list[str] = [
+        str(doc.get("title") or ""),
+        str(doc.get("summary") or ""),
+        str(doc.get("clean_text") or "")[:4000],
+        str(doc.get("normalized_text") or "")[:2000],
+        str(doc.get("source_key") or ""),
+    ]
+    for k in doc.get("topic_keywords") or []:
+        parts.append(str(k))
+    for t in doc.get("normalized_terms") or []:
+        parts.append(str(t))
+    for e in doc.get("entities") or []:
+        if isinstance(e, dict):
+            parts.append(str(e.get("text") or ""))
+    return " ".join(parts).lower()
+
+
+def article_matches_category(doc: dict, category_name: str) -> bool:
+    """True when a processed article belongs to a browse category slug/name."""
+    if not category_name:
+        return True
+    key = str(category_name).strip().lower().replace(" ", "-")
+    if not key:
+        return True
+    hay = article_haystack(doc)
+    display = key.replace("-", " ")
+    if display in hay or key in hay:
+        return True
+    for syn in CATEGORY_SYNONYMS.get(key, ()):
+        if syn in hay:
+            return True
+    for sub in DEFAULT_TAGS_WITH_SUBCATEGORIES.get(key, ()):
+        sub_phrase = sub.replace("-", " ")
+        if sub_phrase in hay or sub in hay:
+            return True
+    return False
+
+
 def user_follows_all_categories(keywords: list[str]) -> bool:
     """True when the user selected essentially every platform category (broad alerts)."""
     if not keywords:

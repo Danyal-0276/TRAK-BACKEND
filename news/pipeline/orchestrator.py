@@ -23,6 +23,7 @@ from news.pipeline.errors import is_transient_pipeline_error
 from news.pipeline.keywords import extract_topic_keywords
 from news.pipeline.ner import extract_entities, ner_model_id
 from news.pipeline.worker_context import pipeline_worker_active
+from news.article_text import sanitize_article_body, sanitize_article_summary
 from news.summarization.inference import summarize_text
 
 # Shared counters for parallel run_batch (reset per batch).
@@ -73,12 +74,12 @@ def process_one_raw(doc: dict) -> dict[str, Any]:
     body = doc.get("body_text") or ""
     title = doc.get("title") or ""
     combined = f"{title}\n{body}"
-    cleaned = clean_text(combined)
+    cleaned = sanitize_article_body(clean_text(combined), title=title)
     normalized_text = normalize_for_matching(combined)
     normalized_terms = simple_tokens(combined)
     cred = predict_credibility(cleaned, title=title)
     sum_result = summarize_text(cleaned, title=title)
-    summary = sum_result["summary"]
+    summary = sanitize_article_summary(sum_result["summary"], title=title, body=cleaned)
     entities = extract_entities(cleaned, title=title)
     topic_keywords = extract_topic_keywords(cleaned, title, summary, entities)
     published_at = doc.get("published_at")

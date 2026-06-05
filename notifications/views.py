@@ -10,6 +10,7 @@ from rest_framework.views import APIView
 
 from news.mongo_db import device_tokens_collection, notifications_collection, user_preferences_collection
 from notifications.user_scope import (
+    prune_stale_keyword_notifications,
     suppress_pre_account_notifications,
     user_id_variants,
     user_notifications_query,
@@ -56,13 +57,13 @@ class BackfillKeywordNotificationsView(APIView):
 
     def post(self, request):
         try:
-            hours = min(336, max(1, int(request.data.get("hours", 168))))
+            hours = min(168, max(1, int(request.data.get("hours", 48))))
         except (TypeError, ValueError):
-            hours = 168
+            hours = 48
         try:
-            limit = min(500, max(1, int(request.data.get("limit", 200))))
+            limit = min(100, max(1, int(request.data.get("limit", 40))))
         except (TypeError, ValueError):
-            limit = 200
+            limit = 40
         from news.notifications.keyword_alerts import notify_keyword_matches_for_user_recent
 
         sent = notify_keyword_matches_for_user_recent(
@@ -77,7 +78,9 @@ class NotificationsUnreadCountView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request):
-        suppress_pre_account_notifications(request.user, now=_utc_now())
+        now = _utc_now()
+        suppress_pre_account_notifications(request.user, now=now)
+        prune_stale_keyword_notifications(request.user, now=now)
         tab = str(request.query_params.get("tab") or "all").strip().lower()
         query = user_notifications_query(request.user, tab=tab)
         unread = int(notifications_collection().count_documents({**query, "read": False}))
@@ -88,7 +91,9 @@ class NotificationsListView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request):
-        suppress_pre_account_notifications(request.user, now=_utc_now())
+        now = _utc_now()
+        suppress_pre_account_notifications(request.user, now=now)
+        prune_stale_keyword_notifications(request.user, now=now)
         tab = str(request.query_params.get("tab") or "all").strip().lower()
         try:
             limit = min(200, max(1, int(request.query_params.get("limit", 80))))

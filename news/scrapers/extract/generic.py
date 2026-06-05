@@ -76,11 +76,16 @@ def extract_generic(html: str, page_url: str, fallback_title: str = "") -> Optio
         )
     )
     if main:
-        for tag in main.find_all(["script", "style", "iframe", "noscript", "nav", "footer"]):
+        for tag in main.find_all(
+            ["script", "style", "iframe", "noscript", "nav", "footer", "header", "aside"]
+        ):
             tag.decompose()
+        for sel in (".nav", ".menu", ".navigation", ".breadcrumb", ".sidebar", "[role='navigation']"):
+            for tag in main.select(sel):
+                tag.decompose()
         links = collect_links(main, page_url)
         parts: list[str] = []
-        for child in main.find_all(["p", "h2", "h3", "blockquote", "li"]):
+        for child in main.find_all(["p", "h2", "h3", "blockquote"]):
             t = normalize_ws(child.get_text(" ", strip=True))
             if len(t) > 40:
                 parts.append(t)

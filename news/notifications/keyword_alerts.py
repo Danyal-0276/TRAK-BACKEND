@@ -13,7 +13,12 @@ from news.moderation_rules import article_visible_to_users
 from news.mongo_db import processed_collection, user_keywords_collection
 from news.services.article_query import _doc_haystack
 from notifications.delivery import create_notification
-from notifications.user_scope import effective_lookback_since, parse_mongo_datetime, user_account_started_at
+from notifications.user_scope import (
+    effective_lookback_since,
+    parse_mongo_datetime,
+    user_account_started_at,
+    user_interests_started_at,
+)
 
 User = get_user_model()
 
@@ -51,12 +56,15 @@ def notify_keyword_matches_for_article(processed_doc: dict) -> int:
             continue
         if user_id not in join_cache:
             try:
-                u = User.objects.filter(pk=int(user_id)).only("date_joined").first()
+                u = User.objects.filter(pk=int(user_id)).only("date_joined", "created_at").first()
             except (TypeError, ValueError):
-                u = User.objects.filter(pk=user_id).only("date_joined").first()
+                u = User.objects.filter(pk=user_id).only("date_joined", "created_at").first()
             join_cache[user_id] = user_account_started_at(u)
         joined = join_cache[user_id]
         if joined and proc_at < joined:
+            continue
+        pub_at = parse_mongo_datetime(processed_doc.get("published_at"))
+        if joined and pub_at and pub_at < joined:
             continue
         keywords = [str(k).strip().lower() for k in (row.get("keywords") or []) if str(k).strip()]
         hits = _matched_keywords(processed_doc, keywords)
@@ -95,7 +103,7 @@ def notify_keyword_matches_for_user_recent(
     user,
     *,
     hours: int = 168,
-    limit: int = 200,
+    limit: int = 40,
 ) -> int:
     """Backfill keyword alerts for one user (e.g. after saving interests)."""
     from news.services import article_query
@@ -108,6 +116,8 @@ def notify_keyword_matches_for_user_recent(
         return 0
 
     since = effective_lookback_since(user, hours=hours)
+    account_started = user_account_started_at(user)
+    interests_started = user_interests_started_at(user)
     col = processed_collection()
     cursor = (
         col.find(
@@ -123,6 +133,14 @@ def notify_keyword_matches_for_user_recent(
     sent = 0
     for doc in cursor:
         if not article_visible_to_users(doc):
+            continue
+        proc_at = parse_mongo_datetime(doc.get("processed_at"))
+        if account_started and proc_at and proc_at < account_started:
+            continue
+        if interests_started and proc_at and proc_at < interests_started:
+            continue
+        pub_at = parse_mongo_datetime(doc.get("published_at"))
+        if pub_at and account_started and pub_at < account_started:
             continue
         hits = _matched_keywords(doc, keywords)
         if not hits:

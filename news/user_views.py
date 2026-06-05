@@ -88,8 +88,11 @@ class ExploreFeedView(APIView):
         except ValueError:
             limit = 30
         q = (request.query_params.get("q") or "").strip()
+        category = (request.query_params.get("category") or "").strip()
         cursor = (request.query_params.get("cursor") or "").strip() or None
-        page = article_query.get_explore_feed_page(limit=limit, search_q=q, cursor=cursor)
+        page = article_query.get_explore_feed_page(
+            limit=limit, search_q=q, category=category, cursor=cursor
+        )
         return Response(page)
 
 
@@ -196,7 +199,7 @@ def _schedule_keyword_alert_backfill(user) -> None:
 
             u = get_user_model().objects.filter(pk=user_id).first()
             if u:
-                notify_keyword_matches_for_user_recent(u, hours=168, limit=200)
+                notify_keyword_matches_for_user_recent(u, hours=48, limit=40)
         except Exception:
             pass
 
