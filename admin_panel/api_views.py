@@ -434,9 +434,21 @@ class AdminArticleDetailView(APIView):
                     status=status.HTTP_400_BAD_REQUEST,
                 )
             if not orchestrator.requeue_failed_raw_by_id(article_id):
+                existing = col.find_one({"_id": oid})
+                if not existing:
+                    return Response(
+                        {"detail": "Article not found."},
+                        status=status.HTTP_404_NOT_FOUND,
+                    )
+                current = str(existing.get("pipeline_status") or "").lower()
                 return Response(
-                    {"detail": "Article not found or not in failed state."},
-                    status=status.HTTP_404_NOT_FOUND,
+                    {
+                        "detail": (
+                            f"Article cannot be requeued (current pipeline status: {current or 'unknown'}). "
+                            "Only failed or stuck processing raw articles can be sent back."
+                        )
+                    },
+                    status=status.HTTP_400_BAD_REQUEST,
                 )
             try:
                 from news.pipeline.auto_runner import schedule_immediate_drain
