@@ -219,13 +219,13 @@ REST_FRAMEWORK = {
     ],
     "EXCEPTION_HANDLER": "TRAK_Backend.api_exceptions.custom_exception_handler",
     "DEFAULT_THROTTLE_RATES": {
-        "register": os.environ.get("THROTTLE_REGISTER", "10/hour"),
-        "login": os.environ.get("THROTTLE_LOGIN", "30/hour"),
+        "register": os.environ.get("THROTTLE_REGISTER", "20/hour"),
+        "login": os.environ.get("THROTTLE_LOGIN", "60/hour"),
         "refresh": os.environ.get("THROTTLE_REFRESH", "120/hour"),
-        "password_reset": os.environ.get("THROTTLE_PASSWORD_RESET", "5/hour"),
-        "otp_send": os.environ.get("THROTTLE_OTP_SEND", "10/hour"),
-        "otp_verify": os.environ.get("THROTTLE_OTP_VERIFY", "30/hour"),
-        "email_validate": os.environ.get("THROTTLE_EMAIL_VALIDATE", "60/hour"),
+        "password_reset": os.environ.get("THROTTLE_PASSWORD_RESET", "30/hour"),
+        "otp_send": os.environ.get("THROTTLE_OTP_SEND", "60/hour"),
+        "otp_verify": os.environ.get("THROTTLE_OTP_VERIFY", "60/hour"),
+        "email_validate": os.environ.get("THROTTLE_EMAIL_VALIDATE", "120/hour"),
     },
 }
 

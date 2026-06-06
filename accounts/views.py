@@ -734,7 +734,7 @@ class RegisterView(RatelimitedAPIMixin, APIView):
     permission_classes = [permissions.AllowAny]
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = "register"
-    ratelimit_rate = "10/h"
+    ratelimit_rate = "20/h"
 
     def post(self, request):
         ser = RegisterSerializer(data=request.data)

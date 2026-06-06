@@ -279,14 +279,20 @@ def mark_raw_for_reprocess(*, include_failed: bool = True) -> int:
 
 
 def requeue_failed_raw_by_id(article_id) -> bool:
-    """Move one failed raw article back to pending."""
+    """Move one failed (or stuck processing) raw article back to pending."""
     try:
         oid = ObjectId(str(article_id))
     except Exception:
         return False
     col = raw_collection()
+    doc = col.find_one({"_id": oid})
+    if not doc:
+        return False
+    status = str(doc.get("pipeline_status") or "").lower()
+    if status not in {"failed", "processing"}:
+        return False
     result = col.update_one(
-        {"_id": oid, "pipeline_status": "failed"},
+        {"_id": oid, "pipeline_status": doc.get("pipeline_status")},
         {
             "$set": {"pipeline_status": "pending"},
             "$unset": {"pipeline_error": "", "processing_started_at": ""},
