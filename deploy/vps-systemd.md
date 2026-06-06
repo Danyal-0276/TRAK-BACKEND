@@ -7,7 +7,7 @@ Use this when moving from Render to a friend’s VPS or a paid VM. MongoDB can s
 | Process | Role |
 |---------|------|
 | `trak-api.service` | Daphne — REST API + WebSockets (`/ws/notifications/`) |
-| `trak-pipeline.timer` | systemd timer — scrape + AI pipeline 1–3×/day |
+| `trak-pipeline.timer` | systemd timer — scrape 100 articles + AI pipeline every 24h |
 | nginx | TLS reverse proxy to Daphne |
 
 Do **not** run `run_news_cycle` or large `run_ai_pipeline --all` inside the API service.
@@ -73,13 +73,22 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now trak-api
 ```
 
-## systemd: pipeline timer (2×/day example)
+## systemd: pipeline timer (every 24 hours)
+
+Set in `.env` on the VPS (disable in-process scheduler on API if you only use the timer):
+
+```env
+SCRAPE_SCHEDULE_ENABLED=true
+# Scheduled scrape policy is fixed in code: once every 24 hours, max 100 articles per run.
+```
+
+On the API service only, set `SCRAPE_SCHEDULE_ENABLED=false` so the timer is the sole scrape trigger.
 
 `/etc/systemd/system/trak-pipeline.service`:
 
 ```ini
 [Unit]
-Description=TRAK scrape + AI pipeline
+Description=TRAK scheduled scrape + AI pipeline (100 articles)
 After=network.target
 
 [Service]
@@ -88,23 +97,17 @@ User=trak
 Group=trak
 WorkingDirectory=/opt/trak/Backend/TRAK_Backend
 EnvironmentFile=/opt/trak/Backend/TRAK_Backend/.env
-ExecStart=/opt/trak/venv/bin/python manage.py run_news_cycle \
-  --sources dawn dunya rss generic_sites \
-  --scrape-limit 35 \
-  --pipeline-all \
-  --pipeline-batch-size 50 \
-  --workers 3 \
-  --requeue-stale
+ExecStart=/opt/trak/venv/bin/python manage.py run_scheduled_scrape
 ```
 
 `/etc/systemd/system/trak-pipeline.timer`:
 
 ```ini
 [Unit]
-Description=Run TRAK news cycle twice daily
+Description=Run TRAK news cycle once daily
 
 [Timer]
-OnCalendar=*-*-* 06,18:00:00
+OnCalendar=*-*-* 02:00:00
 Persistent=true
 
 [Install]
@@ -121,9 +124,11 @@ systemctl list-timers trak-pipeline.timer
 
 | Frequency | `OnCalendar` example |
 |-----------|----------------------|
-| 1×/day | `*-*-* 02:00:00` |
+| 1×/day (default) | `*-*-* 02:00:00` |
 | 2×/day | `*-*-* 06,18:00:00` |
 | 3×/day | `*-*-* 06,14,22:00:00` |
+
+`run_scheduled_scrape` enforces a hard cap of 100 new articles per run (fair-split across sources), pipelines at most 100, records the daily slot even if the run is incomplete, and skips if a run started within the last 24 hours. Check status with `python manage.py check_scrape_status`.
 
 ## nginx (snippet)
 

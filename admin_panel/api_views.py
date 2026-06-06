@@ -339,6 +339,40 @@ class AdminArticlesView(APIView):
         })
 
 
+class AdminFailedArticlesBulkView(APIView):
+    """Bulk actions for raw articles with pipeline_status=failed."""
+
+    permission_classes = [permissions.IsAuthenticated, IsAdminRole]
+
+    def post(self, request):
+        """Requeue all failed raw articles to pending."""
+        requeued = orchestrator.requeue_all_failed_raw()
+        try:
+            from news.pipeline.auto_runner import schedule_immediate_drain
+
+            schedule_immediate_drain()
+        except Exception:
+            pass
+        return Response(
+            {
+                "requeued": requeued,
+                "detail": f"Requeued {requeued} failed article(s) for processing.",
+            },
+            status=status.HTTP_200_OK,
+        )
+
+    def delete(self, request):
+        """Delete all failed raw articles."""
+        deleted = orchestrator.delete_all_failed_raw()
+        return Response(
+            {
+                "deleted": deleted,
+                "detail": f"Deleted {deleted} failed article(s).",
+            },
+            status=status.HTTP_200_OK,
+        )
+
+
 class AdminArticleImageProxyView(APIView):
     """Stream external article images for admin web (hotlink / CSP fallback)."""
 
@@ -392,6 +426,27 @@ class AdminArticleDetailView(APIView):
             col, oid = _resolve_article(scope, article_id)
         except ValueError as exc:
             return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+        if request.data.get("requeue") is True:
+            if scope != "raw":
+                return Response(
+                    {"detail": "Requeue only applies to raw articles."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            if not orchestrator.requeue_failed_raw_by_id(article_id):
+                return Response(
+                    {"detail": "Article not found or not in failed state."},
+                    status=status.HTTP_404_NOT_FOUND,
+                )
+            try:
+                from news.pipeline.auto_runner import schedule_immediate_drain
+
+                schedule_immediate_drain()
+            except Exception:
+                pass
+            updated = col.find_one({"_id": oid})
+            return Response(_serialize_raw(updated), status=status.HTTP_200_OK)
+
         moderation_status = str(request.data.get("status") or "").strip().lower()
         allowed = {"review", "approved", "rejected"}
         if moderation_status not in allowed:
@@ -536,6 +591,7 @@ class AdminScrapeRunView(APIView):
                 "mode": "scrape_only",
                 "scrape_limit": scrape_limit,
                 "total_limit": scrape_limit,
+                "fair_source_split": True,
                 "before": before,
                 "after": after,
                 "delta": {
@@ -587,6 +643,7 @@ class AdminScrapeAndPipelineRunView(APIView):
                 "mode": "scrape_and_pipeline",
                 "scrape_limit": scrape_limit,
                 "total_limit": scrape_limit,
+                "fair_source_split": True,
                 "pipeline_limit": pipeline_limit,
                 "before": before,
                 "after": after,
@@ -639,6 +696,7 @@ def _serialize_admin_user(u: User) -> dict:
         "is_super_admin": bool(getattr(u, "is_super_admin", False)),
         "email_verified": bool(getattr(u, "email_verified", False)),
         "created_at": u.created_at,
+        "last_login": u.last_login,
     }
 
 

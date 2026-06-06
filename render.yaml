@@ -26,7 +26,7 @@ services:
       - key: SUMMARIZER_SPACE_API_NAME
         value: /summarize
       - key: FAKE_DETECTION_SPACE_ID
-        value: abd8433/fake-news-detection
+        value: abd8433/TRAK-Fake-Detection-Model
       - key: FAKE_DETECTION_SPACE_API_NAME
         value: /detect
       - key: SUMMARIZER_MODEL_ID
@@ -52,6 +52,8 @@ services:
         value: https://trak-flax.vercel.app/login
       - key: PIPELINE_WORKERS
         value: "3"
+      - key: SCRAPE_SCHEDULE_ENABLED
+        value: "false"
       # News API keys — set as Render **Secrets** (Environment → Add Secret):
       #   CURRENTS_API_KEY, NEWSDATA_API_KEY, GNEWS_API_KEY
       # Pakistan region (optional tuning):
@@ -61,19 +63,19 @@ services:
       # RSS feeds need no keys (configured in sources_catalog.py).
       # Set in dashboard (secrets): DJANGO_SECRET_KEY, MONGODB_URI, FIREBASE_CREDENTIALS_JSON
 
-  # Scheduled scrape + pipeline (set MONGODB_URI etc. from dashboard secrets).
+  # Scheduled scrape + pipeline every 24h (set MONGODB_URI etc. from dashboard secrets).
   - type: cron
     name: TRAK-PIPELINE
-    schedule: "0 */4 * * *"
+    schedule: "0 0 * * *"
     runtime: python
     buildCommand: pip install -r requirements.txt && python -m spacy download en_core_web_sm
-    startCommand: >
-      python manage.py run_news_cycle
-      --sources dawn dunya rss generic_sites currents newsdata gnews
-      --scrape-limit 35 --workers 3 --requeue-stale
+    startCommand: python manage.py run_scheduled_scrape
     envVars:
       - fromService: { type: web, name: TRAK-BACKEND, envVarKey: MONGODB_URI }
       - key: PIPELINE_WORKERS
         value: "3"
       - key: PIPELINE_AUTO_ENABLED
         value: "false"
+      - key: SCRAPE_SCHEDULE_ENABLED
+        value: "true"
+      # Interval (24h) and article cap (100) are fixed in scrape_scheduler.py

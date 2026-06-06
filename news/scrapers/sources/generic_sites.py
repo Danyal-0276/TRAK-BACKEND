@@ -117,7 +117,7 @@ def discover_article_urls(listing_html: str, listing_url: str, cfg: dict) -> lis
     return sorted(out)
 
 
-def run(client: PoliteHttpClient, *, limit: int = 30) -> dict:
+def run(client: PoliteHttpClient, *, limit: int = 30, max_total: int | None = None) -> dict:
     ua = settings.SCRAPER_USER_AGENT
     configs = _load_site_configs()
     if not configs:
@@ -134,16 +134,22 @@ def run(client: PoliteHttpClient, *, limit: int = 30) -> dict:
     # Each enabled site gets up to `limit` inserts (same as other sources), not one shared
     # budget that only the first site could use.
     for cfg in configs:
+        if max_total is not None and inserted >= max_total:
+            break
         if cfg.get("enabled") is False:
             continue
         key = (cfg.get("key") or "site").strip() or "site"
         source_key = cfg.get("source_key") or f"generic_{key}"
         max_cfg = int(cfg.get("max_per_site") or limit)
         site_cap = min(max_cfg, limit)
+        if max_total is not None:
+            site_cap = min(site_cap, max_total - inserted)
         site_inserted = 0
 
         for listing in cfg.get("listing_urls") or []:
             if site_inserted >= site_cap:
+                break
+            if max_total is not None and inserted >= max_total:
                 break
             listing = listing.strip()
             if not listing:
@@ -157,6 +163,8 @@ def run(client: PoliteHttpClient, *, limit: int = 30) -> dict:
             urls = discover_article_urls(lr.text, listing, cfg)
             for url in urls:
                 if site_inserted >= site_cap:
+                    break
+                if max_total is not None and inserted >= max_total:
                     break
                 if storage.exists_url(url):
                     skipped += 1

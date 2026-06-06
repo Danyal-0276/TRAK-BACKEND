@@ -17,6 +17,7 @@ from django.core.mail import send_mail
 from django.http import JsonResponse
 from django.utils.encoding import force_str
 from django.utils.http import urlsafe_base64_decode
+from django.utils import timezone
 from django.conf import settings
 from rest_framework import generics, permissions, status
 from rest_framework.exceptions import APIException
@@ -675,6 +676,12 @@ class FirebaseLoginView(APIView):
         refresh = RefreshToken.for_user(user)
         if not is_new_user:
             try:
+                now = timezone.now()
+                User.objects.filter(pk=user.pk).update(last_login=now)
+                user.last_login = now
+            except Exception:
+                pass
+            try:
                 from notifications.reengagement import maybe_welcome_back_notification
 
                 maybe_welcome_back_notification(user, previous_last_login=prev_last_login)
@@ -820,6 +827,8 @@ class ThrottledTokenRefreshView(TokenRefreshView):
 
 
 class MeView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
     def get(self, request):
         return Response(_user_payload(request.user), status=status.HTTP_200_OK)
 

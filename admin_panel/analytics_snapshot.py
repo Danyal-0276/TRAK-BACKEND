@@ -38,7 +38,13 @@ def _group_counts(col, field: str, *, limit: int = 15) -> dict[str, int]:
     return out
 
 
-def _daily_series(col, date_field: str, days: int = 14) -> list[dict[str, Any]]:
+def _daily_series(
+    col,
+    date_field: str,
+    days: int = 14,
+    *,
+    match: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
     now = datetime.now(timezone.utc)
     start = (now - timedelta(days=days - 1)).replace(hour=0, minute=0, second=0, microsecond=0)
     buckets: dict[str, int] = {}
@@ -46,10 +52,14 @@ def _daily_series(col, date_field: str, days: int = 14) -> list[dict[str, Any]]:
         d = (start + timedelta(days=i)).strftime("%Y-%m-%d")
         buckets[d] = 0
 
+    date_match: dict[str, Any] = {date_field: {"$gte": start, "$type": "date"}}
+    if match:
+        date_match = {"$and": [date_match, match]}
+
     try:
         cursor = col.aggregate(
             [
-                {"$match": {date_field: {"$gte": start, "$type": "date"}}},
+                {"$match": date_match},
                 {
                     "$group": {
                         "_id": {"$dateToString": {"format": "%Y-%m-%d", "date": f"${date_field}"}},
@@ -193,19 +203,29 @@ def build_admin_analytics_snapshot() -> dict[str, Any]:
     raw_by_source = _group_counts(raw_col, "source_key", limit=12)
     processed_by_source = _group_counts(proc_col, "source_key", limit=12)
 
+    # Scraped = raw ingested that day. Processed = same scrape-day cohort that finished pipeline.
+    # (Using processed_at made processed exceed scraped when clearing backlog from older days.)
     ingest_daily = _daily_series(raw_col, "fetched_at", days=14)
-    processed_daily = _daily_series(proc_col, "processed_at", days=14)
+    processed_daily = _daily_series(
+        raw_col,
+        "fetched_at",
+        days=14,
+        match={"pipeline_status": "done"},
+    )
 
-    # Merge ingest + processed for chart
     activity_daily = []
     proc_map = {d["date"]: d["count"] for d in processed_daily}
-    for row in ingest_daily:
+    ingest_map = {d["date"]: d["count"] for d in ingest_daily}
+    all_dates = sorted(set(ingest_map) | set(proc_map))
+    for day in all_dates:
+        scraped = int(ingest_map.get(day) or 0)
+        processed = min(int(proc_map.get(day) or 0), scraped)
         activity_daily.append(
             {
-                "date": row["date"],
-                "label": row["label"],
-                "scraped": row["count"],
-                "processed": proc_map.get(row["date"], 0),
+                "date": day,
+                "label": day[5:],
+                "scraped": scraped,
+                "processed": processed,
             }
         )
 
