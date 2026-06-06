@@ -33,7 +33,11 @@ def _json_safe(value: Any) -> Any:
     if isinstance(value, ObjectId):
         return str(value)
     if isinstance(value, datetime):
-        return value.isoformat()
+        if value.tzinfo is None:
+            value = value.replace(tzinfo=timezone.utc)
+        else:
+            value = value.astimezone(timezone.utc)
+        return value.strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
     if isinstance(value, dict):
         return {k: _json_safe(v) for k, v in value.items()}
     if isinstance(value, (list, tuple)):
@@ -176,6 +180,7 @@ def submit_user_feedback(
         "reviewed_at": None,
         "dedupe_key": dedupe_key,
         "updated_at": now,
+        "submitted_at": now,
     }
 
     existing = None
@@ -234,6 +239,10 @@ def serialize_feedback(doc: dict, *, reporter_email: str = "") -> dict:
         "admin_notes": doc.get("admin_notes"),
         "reviewed_by": _json_safe(doc.get("reviewed_by")),
         "reviewed_at": _json_safe(doc.get("reviewed_at")),
+        "updated_at": _json_safe(doc.get("updated_at")),
+        "submitted_at": _json_safe(
+            doc.get("submitted_at") or doc.get("updated_at") or doc.get("created_at")
+        ),
         "created_at": _json_safe(doc.get("created_at")),
     }
 
@@ -320,7 +329,7 @@ def list_feedback(
     cursor = (
         user_feedback_collection()
         .find(query)
-        .sort("created_at", -1)
+        .sort([("submitted_at", -1), ("updated_at", -1), ("created_at", -1)])
         .skip(skip)
         .limit(min(limit, 200))
     )

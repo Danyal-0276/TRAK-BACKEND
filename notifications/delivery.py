@@ -111,7 +111,7 @@ def create_notification(
         "keyword": keyword,
         "important": important,
         "read": False,
-        "created_at": now.isoformat(),
+        "created_at": mongo_json(now),
         "meta": safe_meta,
         "audience": audience,
     }
