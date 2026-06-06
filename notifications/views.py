@@ -9,6 +9,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from news.mongo_db import device_tokens_collection, notifications_collection, user_preferences_collection
+from news.mongo_json import mongo_json
 from notifications.user_scope import (
     prune_stale_keyword_notifications,
     suppress_pre_account_notifications,
@@ -34,8 +35,6 @@ def _parse_bool(value, field_name: str) -> bool:
 
 
 def _serialize_notification(doc: dict) -> dict:
-    created = doc.get("created_at")
-    updated = doc.get("updated_at")
     return {
         "id": str(doc.get("_id")),
         "type": doc.get("type") or "system",
@@ -44,9 +43,9 @@ def _serialize_notification(doc: dict) -> dict:
         "keyword": doc.get("keyword"),
         "read": bool(doc.get("read")),
         "important": bool(doc.get("important")),
-        "meta": doc.get("meta") or {},
-        "created_at": created.isoformat() if hasattr(created, "isoformat") else created,
-        "updated_at": updated.isoformat() if hasattr(updated, "isoformat") else updated,
+        "meta": mongo_json(doc.get("meta") or {}),
+        "created_at": mongo_json(doc.get("created_at")),
+        "updated_at": mongo_json(doc.get("updated_at")),
     }
 
 

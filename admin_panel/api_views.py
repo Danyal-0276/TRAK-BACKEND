@@ -930,6 +930,7 @@ class AdminNotificationsView(APIView):
                         "read": bool(r.get("read")),
                         "meta": mongo_json(r.get("meta") or {}),
                         "created_at": mongo_json(r.get("created_at")),
+                        "updated_at": mongo_json(r.get("updated_at")),
                     }
                     for r in rows
                 ]
