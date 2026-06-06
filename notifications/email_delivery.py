@@ -1,11 +1,12 @@
-"""Send notification alert emails via Django SMTP (Gmail)."""
+"""Send notification alert emails (Resend or SMTP)."""
 
 from __future__ import annotations
 
 import logging
 
 from django.conf import settings
-from django.core.mail import send_mail
+
+from accounts.email_transport import EmailDeliveryError, resend_configured, send_transactional_email
 
 logger = logging.getLogger(__name__)
 
@@ -13,8 +14,8 @@ logger = logging.getLogger(__name__)
 def send_notification_email(to_email: str, *, subject: str, body: str, details: str = "") -> None:
     if not to_email or "@" not in to_email:
         return
-    if not getattr(settings, "EMAIL_HOST", ""):
-        logger.debug("EMAIL_HOST not configured; skip notification email")
+    if not resend_configured() and not getattr(settings, "EMAIL_HOST", ""):
+        logger.debug("No email provider configured; skip notification email")
         return
 
     lines = [body.strip()]
@@ -25,10 +26,13 @@ def send_notification_email(to_email: str, *, subject: str, body: str, details: 
     lines.append("— TRAK")
     message = "\n".join(lines)
 
-    send_mail(
-        subject=subject[:200] or "TRAK notification",
-        message=message,
-        from_email=getattr(settings, "DEFAULT_FROM_EMAIL", None),
-        recipient_list=[to_email],
-        fail_silently=False,
-    )
+    try:
+        send_transactional_email(
+            to_email=to_email,
+            subject=subject[:200] or "TRAK notification",
+            text_body=message,
+            from_email=getattr(settings, "DEFAULT_FROM_EMAIL", None),
+        )
+    except EmailDeliveryError:
+        logger.exception("Notification email failed for %s", to_email)
+        raise

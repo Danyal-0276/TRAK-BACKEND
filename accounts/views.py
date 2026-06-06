@@ -28,7 +28,7 @@ from rest_framework_simplejwt.tokens import RefreshToken
 from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
 
 from .decorators import RatelimitedAPIMixin
-from .email_delivery import queue_otp_email
+from .email_delivery import queue_otp_email, send_otp_email_sync
 from .exceptions import AuthServiceError, BruteForceLockoutError, OtpError
 from .password_reset_utils import (
     consume_password_reset_session,
@@ -1021,7 +1021,9 @@ class PasswordResetRequestView(RatelimitedAPIMixin, APIView):
             }
             if user is not None and user.is_active:
                 try:
-                    # Save OTP in-request (~fast), email in background pool (~does not block UI).
+                    purpose_label = OtpPurpose.LABELS.get(
+                        OtpPurpose.PASSWORD_RESET, "password reset"
+                    )
                     _, plain_code = OtpService.issue(
                         email=email,
                         purpose=OtpPurpose.PASSWORD_RESET,
@@ -1029,16 +1031,23 @@ class PasswordResetRequestView(RatelimitedAPIMixin, APIView):
                         send_email=False,
                         check_mx=False,
                     )
-                    queue_otp_email(
+                    email_sent, email_error = send_otp_email_sync(
                         to_email=email,
                         code=plain_code,
-                        purpose_label=OtpPurpose.LABELS.get(
-                            OtpPurpose.PASSWORD_RESET, "password reset"
-                        ),
+                        purpose_label=purpose_label,
                         expires_minutes=max(1, OtpService.expiry_seconds() // 60),
                     )
-                    if settings.DEBUG or _otp_preview_enabled():
-                        payload["dev_code"] = plain_code
+                    payload["email_sent"] = email_sent
+                    if email_error:
+                        payload["email_error"] = email_error
+                    if not email_sent:
+                        payload["detail"] = (
+                            "We could not send the reset email right now. Please try again in a few minutes."
+                        )
+                        if email_error in {"smtp_daily_limit", "gmail_daily_limit"}:
+                            payload["detail"] = (
+                                "Email service is temporarily unavailable. Please try again later."
+                            )
                 except Exception:
                     logger.exception("Password reset OTP failed for %s", email)
                     payload["email_sent"] = False
