@@ -8,6 +8,7 @@ from concurrent.futures import ThreadPoolExecutor
 from django.conf import settings
 from django.db import close_old_connections
 
+from accounts.email_transport import EmailDeliveryError
 from accounts.services.email_service import AuthEmailService
 
 logger = logging.getLogger("accounts.email")
@@ -38,6 +39,34 @@ def _send_otp_email_task(
         logger.exception("OTP email failed for %s (%s)", to_email, purpose_label)
     finally:
         close_old_connections()
+
+
+def send_otp_email_sync(
+    *,
+    to_email: str,
+    code: str,
+    purpose_label: str,
+    expires_minutes: int,
+) -> tuple[bool, str | None]:
+    """
+    Send OTP email in-request so callers know success/failure (password reset).
+    Returns (sent, error_code).
+    """
+    try:
+        AuthEmailService.send_otp_email(
+            to_email=to_email,
+            code=code,
+            purpose_label=purpose_label,
+            expires_minutes=expires_minutes,
+        )
+        logger.info("OTP email sent to %s (%s)", to_email, purpose_label)
+        return True, None
+    except EmailDeliveryError as exc:
+        logger.warning("OTP email failed for %s (%s): %s", to_email, purpose_label, exc)
+        return False, exc.code
+    except Exception:
+        logger.exception("OTP email failed for %s (%s)", to_email, purpose_label)
+        return False, "send_failed"
 
 
 def queue_otp_email(
