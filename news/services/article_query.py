@@ -12,7 +12,7 @@ from news.credibility.score import (
     effective_credibility_probs,
 )
 from news.article_media import article_image_url, hydrate_processed_image_urls
-from news.article_text import sanitize_article_body, sanitize_article_summary
+from news.article_text import build_card_summary, sanitize_article_body
 from news.category_matching import article_matches_category, interest_matches_hay, user_follows_all_categories
 from news.moderation_rules import article_visible_to_users, user_feed_visibility_clause
 from news.mongo_db import processed_collection, raw_collection, reactions_collection, user_keywords_collection
@@ -108,28 +108,16 @@ def _article_full_text(doc: dict) -> str:
     return doc.get("clean_text") or doc.get("body_text") or ""
 
 
-def _article_card_summary(doc: dict) -> str:
-    """Short summary for feed cards."""
-    return doc.get("summary") or ""
-
-
 def article_to_api_dict(doc: dict, *, for_list: bool = False) -> dict:
     """Shape for mobile/web clients. Processed documents only — no raw_articles."""
     cid = _oid_str(doc)
     title = doc.get("title") or ""
     full_text = sanitize_article_body(_article_full_text(doc), title=title)
-    summary = sanitize_article_summary(
-        _article_card_summary(doc),
+    summary = build_card_summary(
         title=title,
-        body=full_text,
+        stored_summary=doc.get("summary") or "",
+        body=_article_full_text(doc),
     )
-    if not summary and full_text:
-        parts = re.split(r"(?<=[.!?])\s+", full_text.strip())
-        summary = sanitize_article_summary(
-            " ".join(parts[:2]) if parts else full_text[:400],
-            title=title,
-            body=full_text,
-        )
     source = doc.get("source_key") or ""
     published = doc.get("published_at")
     if isinstance(published, datetime):
