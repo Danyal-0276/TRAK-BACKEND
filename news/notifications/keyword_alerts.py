@@ -8,10 +8,9 @@ from datetime import datetime, timedelta, timezone
 
 from django.contrib.auth import get_user_model
 
-from news.category_matching import interest_matches_hay, user_follows_all_categories
+from news.category_matching import interest_matches_article, user_follows_all_categories
 from news.moderation_rules import article_visible_to_users
 from news.mongo_db import processed_collection, user_keywords_collection
-from news.services.article_query import _doc_haystack
 from notifications.delivery import create_notification
 from notifications.user_scope import (
     effective_lookback_since,
@@ -30,8 +29,7 @@ def _matched_keywords(doc: dict, keywords: list[str]) -> list[str]:
         return []
     if user_follows_all_categories(keywords):
         return ["your topics"]
-    hay = _doc_haystack(doc)
-    return [k for k in keywords if interest_matches_hay(k, hay)]
+    return [k for k in keywords if interest_matches_article(doc, k)]
 
 
 def notify_keyword_matches_for_article(processed_doc: dict) -> int:

@@ -175,7 +175,14 @@ class PlatformCategoriesView(APIView):
     def get(self, _request):
         from news.platform_taxonomy import get_public_taxonomy
 
-        return Response(get_public_taxonomy())
+        payload = get_public_taxonomy()
+        raw_counts = article_query.get_primary_category_counts()
+        payload["category_counts"] = {
+            str(cat.get("slug") or "").strip(): int(raw_counts.get(str(cat.get("slug") or "").strip(), 0))
+            for cat in (payload.get("categories") or [])
+            if str(cat.get("slug") or "").strip()
+        }
+        return Response(payload)
 
 
 class UserKeywordsView(APIView):

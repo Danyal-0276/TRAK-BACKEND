@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import re
+
 from news.platform_taxonomy import DEFAULT_TAGS_WITH_SUBCATEGORIES
 
 # Align with web `categoryMatch.js` — substring terms that imply a category.
@@ -45,6 +47,16 @@ CATEGORY_SYNONYMS: dict[str, tuple[str, ...]] = {
 MAIN_CATEGORY_SLUGS = frozenset(DEFAULT_TAGS_WITH_SUBCATEGORIES.keys())
 
 
+def _term_in_hay(term: str, hay: str) -> bool:
+    """Substring match; short terms use word boundaries to avoid false positives (e.g. tech in technical)."""
+    term = str(term or "").strip().lower()
+    if not term or not hay:
+        return False
+    if " " in term or len(term) > 5:
+        return term in hay
+    return bool(re.search(rf"(?<![a-z0-9]){re.escape(term)}(?![a-z0-9])", hay))
+
+
 def _slug_variants(term: str) -> set[str]:
     base = str(term or "").strip().lower()
     if not base:
@@ -70,9 +82,14 @@ def expand_interest_terms(keyword: str) -> set[str]:
 
 
 def interest_matches_hay(keyword: str, hay: str) -> bool:
-    if not hay:
-        return False
-    return any(term in hay for term in expand_interest_terms(keyword))
+    """Legacy haystack-only match; prefer interest_matches_article(doc, keyword)."""
+    from news.categorization.matching import interest_matches_hay as _ml_hay
+
+    return _ml_hay(keyword, hay)
+
+
+def legacy_term_in_hay(term: str, hay: str) -> bool:
+    return _term_in_hay(term, hay)
 
 
 def count_main_categories_selected(keywords: list[str]) -> int:
@@ -107,23 +124,16 @@ def article_haystack(doc: dict) -> str:
 
 def article_matches_category(doc: dict, category_name: str) -> bool:
     """True when a processed article belongs to a browse category slug/name."""
-    if not category_name:
-        return True
-    key = str(category_name).strip().lower().replace(" ", "-")
-    if not key:
-        return True
-    hay = article_haystack(doc)
-    display = key.replace("-", " ")
-    if display in hay or key in hay:
-        return True
-    for syn in CATEGORY_SYNONYMS.get(key, ()):
-        if syn in hay:
-            return True
-    for sub in DEFAULT_TAGS_WITH_SUBCATEGORIES.get(key, ()):
-        sub_phrase = sub.replace("-", " ")
-        if sub_phrase in hay or sub in hay:
-            return True
-    return False
+    from news.categorization.matching import article_matches_category as _ml_match
+
+    return _ml_match(doc, category_name)
+
+
+def interest_matches_article(doc: dict, keyword: str) -> bool:
+    """Match a user keyword against a processed article (ML + semantic + legacy rules)."""
+    from news.categorization.matching import interest_matches_article as _ml_match
+
+    return _ml_match(doc, keyword)
 
 
 def user_follows_all_categories(keywords: list[str]) -> bool:
