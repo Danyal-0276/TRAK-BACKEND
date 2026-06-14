@@ -101,6 +101,9 @@ def send_fcm_to_user(user_id: Any, title: str, body: str, data: dict | None = No
             return
         data = data or {}
         str_data = {str(k): str(v) for k, v in data.items() if v is not None}
+        android_cfg = None
+        if str_data.get("type") == "keyword_match":
+            android_cfg = messaging.AndroidConfig(priority="high")
         # FCM multicast batches (max 500)
         for i in range(0, len(tokens), 500):
             batch = tokens[i : i + 500]
@@ -108,9 +111,31 @@ def send_fcm_to_user(user_id: Any, title: str, body: str, data: dict | None = No
                 notification=messaging.Notification(title=title or "TRAK", body=body or ""),
                 data=str_data,
                 tokens=batch,
+                android=android_cfg,
             )
             send_fn = getattr(messaging, "send_each_for_multicast", None) or getattr(messaging, "send_multicast", None)
-            if send_fn:
-                send_fn(msg)
+            if not send_fn:
+                continue
+            resp = send_fn(msg)
+            _prune_invalid_tokens(coll, batch, resp)
     except Exception as exc:
         logger.warning("FCM send failed: %s", exc)
+
+
+def _prune_invalid_tokens(coll, tokens: list[str], resp) -> None:
+    """Drop expired/invalid FCM tokens so users don't get duplicate retries."""
+    responses = getattr(resp, "responses", None)
+    if not responses:
+        return
+    for idx, result in enumerate(responses):
+        if result.success:
+            continue
+        exc = result.exception
+        if exc is None:
+            continue
+        msg = str(exc).lower()
+        if "not found" in msg or "invalid" in msg or "unregistered" in msg:
+            try:
+                coll.delete_one({"token": tokens[idx]})
+            except Exception:
+                pass

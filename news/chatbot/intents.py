@@ -3,6 +3,12 @@ from __future__ import annotations
 
 import re
 
+from news.chatbot.app_knowledge import (
+    is_app_help_message,
+    is_security_sensitive_message,
+    is_team_about_message,
+)
+
 IDENTITY_REPLY = (
     "I was built by the TRAK team to help you explore news inside the TRAK app. "
     "Ask me about headlines, topics, or stories from your TRAK feed."
@@ -298,6 +304,8 @@ def has_news_intent(message: str, *, history: list[dict] | None = None) -> bool:
     text = normalize_user_message(message)
     if not text:
         return False
+    if is_security_sensitive_message(text) or is_app_help_message(text) or is_team_about_message(text):
+        return False
     if history and is_follow_up_message(text) and _last_user_news_message(history):
         return True
     if is_greeting_message(text):
@@ -386,6 +394,8 @@ def is_off_topic_message(message: str, *, history: list[dict] | None = None) -> 
     text = normalize_user_message(message)
     if not text:
         return False
+    if is_security_sensitive_message(text) or is_app_help_message(text) or is_team_about_message(text):
+        return False
     if history and is_follow_up_message(text) and _last_user_news_message(history):
         return False
     if is_greeting_message(text):
@@ -421,10 +431,16 @@ def classify_empty_result(message: str, *, had_search_hits: bool = False) -> str
 
 
 def detect_intent(message: str, *, history: list[dict] | None = None) -> str:
-    """identity | greeting | off_topic | summarize | headlines | search"""
+    """security_block | app_help | team | identity | greeting | off_topic | summarize | headlines | search"""
     text = normalize_user_message(message)
     if not text:
         return "search"
+    if is_security_sensitive_message(text):
+        return "security_block"
+    if is_app_help_message(text):
+        return "app_help"
+    if is_team_about_message(text):
+        return "team"
     if IDENTITY_PATTERN.search(text):
         return "identity"
     if is_greeting_message(text):

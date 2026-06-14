@@ -42,6 +42,11 @@ def chatbot_history_collection() -> Collection:
     return get_db()[name]
 
 
+def chatbot_conversations_collection() -> Collection:
+    name = getattr(settings, "MONGODB_CHATBOT_CONVERSATIONS_COLLECTION", "chatbot_conversations")
+    return get_db()[name]
+
+
 def notifications_collection() -> Collection:
     name = getattr(settings, "MONGODB_NOTIFICATIONS_COLLECTION", "notifications")
     return get_db()[name]
@@ -127,6 +132,9 @@ def ensure_all_article_indexes() -> None:
 
     ch = chatbot_history_collection()
     ch.create_index([("user_id", ASCENDING)], unique=True)
+
+    cc = chatbot_conversations_collection()
+    cc.create_index([("user_id", ASCENDING), ("updated_at", DESCENDING)])
 
     notif = notifications_collection()
     notif.create_index([("user_id", ASCENDING), ("created_at", ASCENDING)])

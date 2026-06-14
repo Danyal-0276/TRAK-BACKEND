@@ -1,3 +1,4 @@
+import logging
 import threading
 from datetime import datetime, timezone
 
@@ -26,16 +27,21 @@ from news.chatbot import (
     ChatbotConfigError,
     fallback_reply,
     gather_news_context,
+    generate_app_help_reply,
     generate_chatbot_reply,
     finalize_reply_with_article_cards,
     generate_greeting_reply,
     generate_identity_reply,
     generate_no_match_reply,
     generate_off_topic_reply,
+    generate_team_reply,
+    get_app_help_reply,
     get_greeting_reply,
     get_identity_reply,
     get_no_match_reply,
     get_off_topic_reply,
+    get_security_reply,
+    get_team_reply,
     has_strong_article_match,
     is_chatbot_configured,
     pick_primary_article,
@@ -48,7 +54,16 @@ from news.chatbot.intents import (
     is_off_topic_message,
     resolve_search_message,
 )
+from news.chatbot.conversations import (
+    append_conversation_exchange,
+    delete_conversation,
+    get_conversation,
+    get_prior_messages,
+    list_conversations,
+)
 from news.feedback_constants import FEEDBACK_CATEGORIES
+
+logger = logging.getLogger(__name__)
 
 
 def _parse_bool(value, field_name: str) -> bool:
@@ -411,10 +426,94 @@ class ChatbotView(APIView):
         if not message:
             return Response({"detail": "message is required"}, status=status.HTTP_400_BAD_REQUEST)
 
-        history_row = chatbot_history_collection().find_one({"user_id": request.user.pk}) or {}
-        prior_messages = history_row.get("messages") or []
+        conversation_id = str(request.data.get("conversation_id") or "").strip() or None
+        prior_messages, resolved_id = get_prior_messages(request.user.pk, conversation_id)
+        if conversation_id and not resolved_id:
+            return Response({"detail": "Conversation not found."}, status=status.HTTP_404_NOT_FOUND)
 
-        if detect_intent(message) == "greeting":
+        def _respond(payload, *, primary=None, related=None):
+            conv_id = append_conversation_exchange(
+                request.user.pk,
+                resolved_id or conversation_id,
+                message,
+                payload.get("reply") or "",
+                primary,
+                related=related,
+            )
+            payload["conversation_id"] = conv_id
+            return Response(payload)
+
+        intent = detect_intent(message, history=prior_messages)
+
+        if intent == "security_block":
+            payload = {
+                "reply": sanitize_bot_reply(get_security_reply()),
+                "articles": [],
+                "primary_article": None,
+                "has_trak_article": False,
+                "intent": "security_block",
+                "powered_by": "local",
+            }
+            return _respond(payload)
+
+        if intent == "app_help":
+            try:
+                reply = (
+                    generate_app_help_reply(message, prior_messages)
+                    if is_chatbot_configured()
+                    else get_app_help_reply(message)
+                )
+            except ChatbotAPIError:
+                reply = get_app_help_reply(message)
+            payload = {
+                "reply": sanitize_bot_reply(reply),
+                "articles": [],
+                "primary_article": None,
+                "has_trak_article": False,
+                "intent": "app_help",
+                "powered_by": "gemini" if is_chatbot_configured() else "local",
+            }
+            return _respond(payload)
+
+        if intent == "team":
+            try:
+                reply = (
+                    generate_team_reply(message, prior_messages)
+                    if is_chatbot_configured()
+                    else get_team_reply()
+                )
+            except ChatbotAPIError:
+                reply = get_team_reply()
+            payload = {
+                "reply": sanitize_bot_reply(reply),
+                "articles": [],
+                "primary_article": None,
+                "has_trak_article": False,
+                "intent": "team",
+                "powered_by": "gemini" if is_chatbot_configured() else "local",
+            }
+            return _respond(payload)
+
+        if intent == "identity":
+            try:
+                reply = (
+                    generate_identity_reply(message, prior_messages)
+                    if is_chatbot_configured()
+                    else get_identity_reply()
+                )
+            except ChatbotAPIError:
+                reply = get_identity_reply()
+            payload = {
+                "reply": sanitize_bot_reply(reply),
+                "articles": [],
+                "primary_article": None,
+                "has_trak_article": False,
+                "intent": "identity",
+                "powered_by": "gemini" if is_chatbot_configured() else "local",
+            }
+            return _respond(payload)
+
+        if intent == "greeting":
             try:
                 reply = (
                     generate_greeting_reply(message, prior_messages)
@@ -431,62 +530,7 @@ class ChatbotView(APIView):
                 "intent": "greeting",
                 "powered_by": "gemini" if is_chatbot_configured() else "local",
             }
-            _append_chatbot_history(request.user.pk, message, payload["reply"], None)
-            return Response(payload)
-
-        if is_off_topic_message(message, history=prior_messages):
-            try:
-                reply = (
-                    generate_off_topic_reply(message, prior_messages)
-                    if is_chatbot_configured()
-                    else get_off_topic_reply()
-                )
-            except ChatbotAPIError:
-                reply = get_off_topic_reply()
-            payload = {
-                "reply": sanitize_bot_reply(reply),
-                "articles": [],
-                "primary_article": None,
-                "has_trak_article": False,
-                "intent": "off_topic",
-                "powered_by": "gemini" if is_chatbot_configured() else "local",
-            }
-            _append_chatbot_history(request.user.pk, message, payload["reply"], None)
-            return Response(payload)
-
-        intent = detect_intent(message, history=prior_messages)
-        ctx_limit = 8 if intent != "summarize" else 6
-        articles, intent = gather_news_context(
-            request.user,
-            message,
-            limit=ctx_limit,
-            history=prior_messages,
-        )
-        search_message = resolve_search_message(message, prior_messages)
-        primary = pick_primary_article(search_message, articles)
-        if intent == "headlines" and articles and not primary:
-            primary = articles[0]
-        db_match = has_strong_article_match(search_message, primary)
-
-        if intent == "identity":
-            try:
-                reply = (
-                    generate_identity_reply(message, prior_messages)
-                    if is_chatbot_configured()
-                    else get_identity_reply()
-                )
-            except ChatbotAPIError:
-                reply = get_identity_reply()
-            payload = {
-                "reply": sanitize_bot_reply(reply),
-                "articles": [],
-                "primary_article": None,
-                "has_trak_article": False,
-                "intent": intent,
-                "powered_by": "gemini" if is_chatbot_configured() else "local",
-            }
-            _append_chatbot_history(request.user.pk, message, payload["reply"], None)
-            return Response(payload)
+            return _respond(payload)
 
         if intent == "off_topic":
             try:
@@ -505,8 +549,20 @@ class ChatbotView(APIView):
                 "intent": intent,
                 "powered_by": "gemini" if is_chatbot_configured() else "local",
             }
-            _append_chatbot_history(request.user.pk, message, payload["reply"], None)
-            return Response(payload)
+            return _respond(payload)
+
+        ctx_limit = 8 if intent != "summarize" else 6
+        articles, intent = gather_news_context(
+            request.user,
+            message,
+            limit=ctx_limit,
+            history=prior_messages,
+        )
+        search_message = resolve_search_message(message, prior_messages)
+        primary = pick_primary_article(search_message, articles)
+        if intent == "headlines" and articles and not primary:
+            primary = articles[0]
+        db_match = has_strong_article_match(search_message, primary)
 
         if intent in ("no_match", "off_topic") or not articles:
             is_off = intent == "off_topic" or not has_news_intent(message, history=prior_messages)
@@ -534,8 +590,7 @@ class ChatbotView(APIView):
                 "intent": resolved_intent,
                 "powered_by": "gemini" if is_chatbot_configured() else "local",
             }
-            _append_chatbot_history(request.user.pk, message, payload["reply"], None)
-            return Response(payload)
+            return _respond(payload)
 
         if not articles and not is_chatbot_configured():
             payload = {
@@ -544,8 +599,7 @@ class ChatbotView(APIView):
                 "primary_article": None,
                 "has_trak_article": False,
             }
-            _append_chatbot_history(request.user.pk, message, payload["reply"], None)
-            return Response(payload)
+            return _respond(payload)
 
         reply = ""
         if is_chatbot_configured():
@@ -560,10 +614,8 @@ class ChatbotView(APIView):
             except ChatbotConfigError:
                 reply = fallback_reply(message, articles, primary=primary, intent=intent)
             except ChatbotAPIError as exc:
-                return Response(
-                    {"detail": f"TRAK AI is temporarily unavailable: {exc}"},
-                    status=status.HTTP_502_BAD_GATEWAY,
-                )
+                logger.warning("Gemini chat failed, using local fallback: %s", exc)
+                reply = fallback_reply(message, articles, primary=primary, intent=intent)
         else:
             reply = fallback_reply(message, articles, primary=primary, intent=intent)
 
@@ -609,14 +661,7 @@ class ChatbotView(APIView):
             "intent": intent,
             "powered_by": "gemini" if is_chatbot_configured() else "local",
         }
-        _append_chatbot_history(
-            request.user.pk,
-            message,
-            payload["reply"],
-            primary_payload,
-            related=serialized,
-        )
-        return Response(payload)
+        return _respond(payload, primary=primary_payload, related=serialized)
 
 
 def _append_chatbot_history(
@@ -648,12 +693,37 @@ def _append_chatbot_history(
     col.update_one({"user_id": user_id}, {"$set": {"messages": messages}}, upsert=True)
 
 
+class ChatbotConversationsView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        return Response({"conversations": list_conversations(request.user.pk)})
+
+
+class ChatbotConversationDetailView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request, conversation_id):
+        conv = get_conversation(request.user.pk, conversation_id)
+        if not conv:
+            return Response({"detail": "Conversation not found."}, status=status.HTTP_404_NOT_FOUND)
+        return Response(conv)
+
+    def delete(self, request, conversation_id):
+        if delete_conversation(request.user.pk, conversation_id):
+            return Response({"detail": "Conversation deleted."}, status=status.HTTP_200_OK)
+        return Response({"detail": "Conversation not found."}, status=status.HTTP_404_NOT_FOUND)
+
+
 class ChatbotHistoryView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request):
-        col = chatbot_history_collection()
-        row = col.find_one({"user_id": request.user.pk}) or {}
+        conversations = list_conversations(request.user.pk)
+        if conversations:
+            conv = get_conversation(request.user.pk, conversations[0]["id"])
+            return Response({"messages": (conv or {}).get("messages") or []})
+        row = chatbot_history_collection().find_one({"user_id": request.user.pk}) or {}
         return Response({"messages": row.get("messages") or []})
 
     def delete(self, request):

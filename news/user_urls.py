@@ -20,6 +20,12 @@ urlpatterns = [
     path("article-tts/chunks/", user_views.ArticleTtsChunksView.as_view(), name="user-article-tts-chunks"),
     path("article-tts/", user_views.ArticleTtsView.as_view(), name="user-article-tts"),
     path("chatbot/", user_views.ChatbotView.as_view(), name="user-chatbot"),
+    path("chatbot/conversations/", user_views.ChatbotConversationsView.as_view(), name="user-chatbot-conversations"),
+    path(
+        "chatbot/conversations/<str:conversation_id>/",
+        user_views.ChatbotConversationDetailView.as_view(),
+        name="user-chatbot-conversation-detail",
+    ),
     path("chatbot/history/", user_views.ChatbotHistoryView.as_view(), name="user-chatbot-history"),
     path("preferences/", user_views.UserPreferencesView.as_view(), name="user-preferences"),
     path("bookmarks/", user_views.BookmarkListCreateView.as_view(), name="user-bookmarks"),
