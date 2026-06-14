@@ -628,6 +628,11 @@ def finalize_reply_with_article_cards(
     return intro
 
 
+def _is_gemini_quota_error(exc: Exception) -> bool:
+    text = str(exc).lower()
+    return "429" in text or "quota" in text or "rate limit" in text or "rate-limit" in text
+
+
 def _gemini_models_to_try() -> list[str]:
     configured = getattr(settings, "GEMINI_CHATBOT_MODEL", "gemini-1.5-flash") or "gemini-1.5-flash"
     fallbacks = list(getattr(settings, "GEMINI_CHATBOT_FALLBACK_MODELS", None) or [])
@@ -677,6 +682,12 @@ def _run_gemini_reply(
                 return text
             last_error = ChatbotAPIError("Empty response from Gemini")
         except Exception as exc:
+            if _is_gemini_quota_error(exc):
+                logger.warning(
+                    "Gemini free-tier quota exceeded for %s — using static fallback until reset (see ai.google.dev/rate-limits).",
+                    model_name,
+                )
+                break
             logger.warning("Gemini (%s) failed: %s", model_name, exc)
             last_error = exc
 
@@ -871,6 +882,12 @@ def generate_chatbot_reply(
                 return text
             last_error = ChatbotAPIError("Empty response from Gemini")
         except Exception as exc:
+            if _is_gemini_quota_error(exc):
+                logger.warning(
+                    "Gemini free-tier quota exceeded for %s — using static fallback until reset (see ai.google.dev/rate-limits).",
+                    model_name,
+                )
+                break
             logger.warning("Gemini model %s failed: %s", model_name, exc)
             last_error = exc
 
