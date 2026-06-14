@@ -12,6 +12,12 @@ from typing import Any, Optional
 from django.conf import settings
 from django.contrib.auth import get_user_model
 
+from news.chatbot.app_knowledge import (
+    build_app_knowledge_context,
+    get_app_help_reply,
+    get_security_reply,
+    get_team_reply,
+)
 from news.chatbot.intents import (
     GREETING_REPLY,
     IDENTITY_REPLY,
@@ -41,6 +47,11 @@ SYSTEM_INSTRUCTION = """You are TRAK AI Assistant inside the TRAK news applicati
 
 Identity: Built by the TRAK team. If asked who made you, say the TRAK team.
 
+Scope:
+- News: headlines, topics, and stories from the TRAK feed.
+- Product help: how to use TRAK on web/mobile (bookmarks, keywords, notifications, settings, feeds).
+- Team: public About-page info only (developer names and roles).
+
 Voice & style:
 - Sound like a sharp newsroom assistant: clear, direct, conversational.
 - Lead with the answer to what the user asked — do not open with filler ("Certainly!", "Great question!").
@@ -54,6 +65,7 @@ Grounding rules:
 5. If no relevant articles in context, say TRAK does not have that story yet; do not claim loose matches.
 6. If the user asks about coding, homework, recipes, jokes, or other non-news topics, say you only help with news and suggest a news question — do not invent related articles.
 7. If the user asks a follow-up ("tell me more", "what else"), use conversation history plus article context to stay on topic.
+8. NEVER disclose API keys, backend code, database details, infrastructure, or internal endpoints.
 """
 
 OFF_TOPIC_GEMINI_INSTRUCTION = """You are TRAK AI in the TRAK news app, created by the TRAK team.
@@ -91,6 +103,40 @@ Reply warmly in 1-3 sentences:
 - Invite them to ask a news question with one brief example
 
 Do NOT search for articles, claim specific stories exist, or include URLs.
+Plain text only."""
+
+APP_HELP_GEMINI_INSTRUCTION = """You are TRAK AI in the TRAK news app, built by the TRAK team.
+
+The user wants help using TRAK (mobile app, website, or features). Reply in clear, friendly steps.
+
+You MUST:
+- Use ONLY the TRAK product facts provided below — do not invent features or screens
+- Give practical how-to guidance (where to tap, which tab, which settings area)
+- Keep it to 2-5 sentences unless they asked for a full overview
+- Mention web and mobile when relevant
+
+You MUST NOT:
+- Discuss API keys, backend, databases, scrapers, or internal architecture
+- Include http:// or https:// links
+- Claim to search news articles for this turn
+
+Plain text only."""
+
+TEAM_GEMINI_INSTRUCTION = """You are TRAK AI in the TRAK news app.
+
+The user is asking about the TRAK team or developers (public About page info).
+
+You MUST:
+- Name the team members and roles from the facts provided
+- Mention they can see full details on the About page in the app
+- Note you are TRAK AI, the in-app assistant built by that team
+- Keep it to 2-4 sentences
+
+You MUST NOT:
+- Credit Google, Gemini, or OpenAI as the product builder
+- Share private contact info, emails, or internal org details not in the facts
+- Include URLs
+
 Plain text only."""
 
 
@@ -150,7 +196,7 @@ def gather_news_context(
     Returns (articles, intent) where intent includes off_topic when not news-related.
     """
     intent = detect_intent(message, history=history)
-    if intent in ("identity", "off_topic", "greeting"):
+    if intent in ("identity", "off_topic", "greeting", "security_block", "app_help", "team"):
         return [], intent
 
     effective = resolve_search_message(message, history)
@@ -686,6 +732,45 @@ def generate_greeting_reply(
     )
 
 
+def generate_app_help_reply(
+    user_message: str,
+    history: list[dict] | None = None,
+) -> str:
+    """Gemini-generated TRAK app / feature help (no article search)."""
+    facts = build_app_knowledge_context()
+    prompt = (
+        f"TRAK product facts:\n{facts}\n\n"
+        f"User question:\n{user_message.strip()}\n\n"
+        "Answer with practical in-app guidance."
+    )
+    return _run_gemini_reply(
+        user_message,
+        system_instruction=APP_HELP_GEMINI_INSTRUCTION,
+        user_prompt=prompt,
+        history=history,
+        fallback=get_app_help_reply(user_message),
+    )
+
+
+def generate_team_reply(
+    user_message: str,
+    history: list[dict] | None = None,
+) -> str:
+    """Gemini-generated team / About page answer (no article search)."""
+    facts = build_app_knowledge_context()
+    prompt = (
+        f"Public team facts:\n{facts}\n\n"
+        f"User question:\n{user_message.strip()}"
+    )
+    return _run_gemini_reply(
+        user_message,
+        system_instruction=TEAM_GEMINI_INSTRUCTION,
+        user_prompt=prompt,
+        history=history,
+        fallback=get_team_reply(),
+    )
+
+
 def generate_no_match_reply(
     user_message: str,
     history: list[dict] | None = None,
@@ -815,6 +900,15 @@ def fallback_reply(
     primary: dict | None = None,
     intent: str = "search",
 ) -> str:
+    if intent == "security_block":
+        return get_security_reply()
+
+    if intent == "app_help":
+        return get_app_help_reply(message)
+
+    if intent == "team":
+        return get_team_reply()
+
     if intent == "identity":
         return get_identity_reply()
 

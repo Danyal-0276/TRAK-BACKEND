@@ -27,16 +27,21 @@ from news.chatbot import (
     ChatbotConfigError,
     fallback_reply,
     gather_news_context,
+    generate_app_help_reply,
     generate_chatbot_reply,
     finalize_reply_with_article_cards,
     generate_greeting_reply,
     generate_identity_reply,
     generate_no_match_reply,
     generate_off_topic_reply,
+    generate_team_reply,
+    get_app_help_reply,
     get_greeting_reply,
     get_identity_reply,
     get_no_match_reply,
     get_off_topic_reply,
+    get_security_reply,
+    get_team_reply,
     has_strong_article_match,
     is_chatbot_configured,
     pick_primary_article,
@@ -438,57 +443,56 @@ class ChatbotView(APIView):
             payload["conversation_id"] = conv_id
             return Response(payload)
 
-        if detect_intent(message) == "greeting":
-            try:
-                reply = (
-                    generate_greeting_reply(message, prior_messages)
-                    if is_chatbot_configured()
-                    else get_greeting_reply(message)
-                )
-            except ChatbotAPIError:
-                reply = get_greeting_reply(message)
-            payload = {
-                "reply": sanitize_bot_reply(reply),
-                "articles": [],
-                "primary_article": None,
-                "has_trak_article": False,
-                "intent": "greeting",
-                "powered_by": "gemini" if is_chatbot_configured() else "local",
-            }
-            return _respond(payload)
-
-        if is_off_topic_message(message, history=prior_messages):
-            try:
-                reply = (
-                    generate_off_topic_reply(message, prior_messages)
-                    if is_chatbot_configured()
-                    else get_off_topic_reply()
-                )
-            except ChatbotAPIError:
-                reply = get_off_topic_reply()
-            payload = {
-                "reply": sanitize_bot_reply(reply),
-                "articles": [],
-                "primary_article": None,
-                "has_trak_article": False,
-                "intent": "off_topic",
-                "powered_by": "gemini" if is_chatbot_configured() else "local",
-            }
-            return _respond(payload)
-
         intent = detect_intent(message, history=prior_messages)
-        ctx_limit = 8 if intent != "summarize" else 6
-        articles, intent = gather_news_context(
-            request.user,
-            message,
-            limit=ctx_limit,
-            history=prior_messages,
-        )
-        search_message = resolve_search_message(message, prior_messages)
-        primary = pick_primary_article(search_message, articles)
-        if intent == "headlines" and articles and not primary:
-            primary = articles[0]
-        db_match = has_strong_article_match(search_message, primary)
+
+        if intent == "security_block":
+            payload = {
+                "reply": sanitize_bot_reply(get_security_reply()),
+                "articles": [],
+                "primary_article": None,
+                "has_trak_article": False,
+                "intent": "security_block",
+                "powered_by": "local",
+            }
+            return _respond(payload)
+
+        if intent == "app_help":
+            try:
+                reply = (
+                    generate_app_help_reply(message, prior_messages)
+                    if is_chatbot_configured()
+                    else get_app_help_reply(message)
+                )
+            except ChatbotAPIError:
+                reply = get_app_help_reply(message)
+            payload = {
+                "reply": sanitize_bot_reply(reply),
+                "articles": [],
+                "primary_article": None,
+                "has_trak_article": False,
+                "intent": "app_help",
+                "powered_by": "gemini" if is_chatbot_configured() else "local",
+            }
+            return _respond(payload)
+
+        if intent == "team":
+            try:
+                reply = (
+                    generate_team_reply(message, prior_messages)
+                    if is_chatbot_configured()
+                    else get_team_reply()
+                )
+            except ChatbotAPIError:
+                reply = get_team_reply()
+            payload = {
+                "reply": sanitize_bot_reply(reply),
+                "articles": [],
+                "primary_article": None,
+                "has_trak_article": False,
+                "intent": "team",
+                "powered_by": "gemini" if is_chatbot_configured() else "local",
+            }
+            return _respond(payload)
 
         if intent == "identity":
             try:
@@ -504,7 +508,26 @@ class ChatbotView(APIView):
                 "articles": [],
                 "primary_article": None,
                 "has_trak_article": False,
-                "intent": intent,
+                "intent": "identity",
+                "powered_by": "gemini" if is_chatbot_configured() else "local",
+            }
+            return _respond(payload)
+
+        if intent == "greeting":
+            try:
+                reply = (
+                    generate_greeting_reply(message, prior_messages)
+                    if is_chatbot_configured()
+                    else get_greeting_reply(message)
+                )
+            except ChatbotAPIError:
+                reply = get_greeting_reply(message)
+            payload = {
+                "reply": sanitize_bot_reply(reply),
+                "articles": [],
+                "primary_article": None,
+                "has_trak_article": False,
+                "intent": "greeting",
                 "powered_by": "gemini" if is_chatbot_configured() else "local",
             }
             return _respond(payload)
@@ -527,6 +550,19 @@ class ChatbotView(APIView):
                 "powered_by": "gemini" if is_chatbot_configured() else "local",
             }
             return _respond(payload)
+
+        ctx_limit = 8 if intent != "summarize" else 6
+        articles, intent = gather_news_context(
+            request.user,
+            message,
+            limit=ctx_limit,
+            history=prior_messages,
+        )
+        search_message = resolve_search_message(message, prior_messages)
+        primary = pick_primary_article(search_message, articles)
+        if intent == "headlines" and articles and not primary:
+            primary = articles[0]
+        db_match = has_strong_article_match(search_message, primary)
 
         if intent in ("no_match", "off_topic") or not articles:
             is_off = intent == "off_topic" or not has_news_intent(message, history=prior_messages)
