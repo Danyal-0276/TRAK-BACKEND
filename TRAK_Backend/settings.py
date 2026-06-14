@@ -436,7 +436,8 @@ if not DEBUG:
     SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
     SESSION_COOKIE_SECURE = True
     CSRF_COOKIE_SECURE = True
-    if os.environ.get("DJANGO_SECURE_SSL_REDIRECT", "true").lower() in ("1", "true", "yes"):
+    # Default False — plain HTTP on :8000 (VPS/docker). Set True when nginx terminates HTTPS.
+    if os.environ.get("DJANGO_SECURE_SSL_REDIRECT", "false").lower() in ("1", "true", "yes"):
         SECURE_SSL_REDIRECT = True
     SECURE_HSTS_SECONDS = int(os.environ.get("SECURE_HSTS_SECONDS", "31536000"))
     SECURE_HSTS_INCLUDE_SUBDOMAINS = (
