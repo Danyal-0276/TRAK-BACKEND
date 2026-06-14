@@ -458,7 +458,7 @@ MONGODB_CHATBOT_HISTORY_COLLECTION = os.environ.get("MONGODB_CHATBOT_HISTORY_COL
 
 # TRAK news chatbot — Google Gemini 1.5 Flash (news-only; set key in production)
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "").strip() or None
-GEMINI_CHATBOT_MODEL = os.environ.get("GEMINI_CHATBOT_MODEL", "gemini-1.5-flash").strip() or "gemini-1.5-flash"
+GEMINI_CHATBOT_MODEL = os.environ.get("GEMINI_CHATBOT_MODEL", "gemini-2.5-flash").strip() or "gemini-2.5-flash"
 GEMINI_CHATBOT_TIMEOUT = float(os.environ.get("GEMINI_CHATBOT_TIMEOUT", "45"))
 GEMINI_CHATBOT_FALLBACK_MODELS = [
     m.strip()

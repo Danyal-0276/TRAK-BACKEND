@@ -1,3 +1,4 @@
+import logging
 import threading
 from datetime import datetime, timezone
 
@@ -49,6 +50,8 @@ from news.chatbot.intents import (
     resolve_search_message,
 )
 from news.feedback_constants import FEEDBACK_CATEGORIES
+
+logger = logging.getLogger(__name__)
 
 
 def _parse_bool(value, field_name: str) -> bool:
@@ -560,10 +563,8 @@ class ChatbotView(APIView):
             except ChatbotConfigError:
                 reply = fallback_reply(message, articles, primary=primary, intent=intent)
             except ChatbotAPIError as exc:
-                return Response(
-                    {"detail": f"TRAK AI is temporarily unavailable: {exc}"},
-                    status=status.HTTP_502_BAD_GATEWAY,
-                )
+                logger.warning("Gemini chat failed, using local fallback: %s", exc)
+                reply = fallback_reply(message, articles, primary=primary, intent=intent)
         else:
             reply = fallback_reply(message, articles, primary=primary, intent=intent)
 
