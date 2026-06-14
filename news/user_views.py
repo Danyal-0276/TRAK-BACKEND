@@ -49,6 +49,13 @@ from news.chatbot.intents import (
     is_off_topic_message,
     resolve_search_message,
 )
+from news.chatbot.conversations import (
+    append_conversation_exchange,
+    delete_conversation,
+    get_conversation,
+    get_prior_messages,
+    list_conversations,
+)
 from news.feedback_constants import FEEDBACK_CATEGORIES
 
 logger = logging.getLogger(__name__)
@@ -414,8 +421,22 @@ class ChatbotView(APIView):
         if not message:
             return Response({"detail": "message is required"}, status=status.HTTP_400_BAD_REQUEST)
 
-        history_row = chatbot_history_collection().find_one({"user_id": request.user.pk}) or {}
-        prior_messages = history_row.get("messages") or []
+        conversation_id = str(request.data.get("conversation_id") or "").strip() or None
+        prior_messages, resolved_id = get_prior_messages(request.user.pk, conversation_id)
+        if conversation_id and not resolved_id:
+            return Response({"detail": "Conversation not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        def _respond(payload, *, primary=None, related=None):
+            conv_id = append_conversation_exchange(
+                request.user.pk,
+                resolved_id or conversation_id,
+                message,
+                payload.get("reply") or "",
+                primary,
+                related=related,
+            )
+            payload["conversation_id"] = conv_id
+            return Response(payload)
 
         if detect_intent(message) == "greeting":
             try:
@@ -434,8 +455,7 @@ class ChatbotView(APIView):
                 "intent": "greeting",
                 "powered_by": "gemini" if is_chatbot_configured() else "local",
             }
-            _append_chatbot_history(request.user.pk, message, payload["reply"], None)
-            return Response(payload)
+            return _respond(payload)
 
         if is_off_topic_message(message, history=prior_messages):
             try:
@@ -454,8 +474,7 @@ class ChatbotView(APIView):
                 "intent": "off_topic",
                 "powered_by": "gemini" if is_chatbot_configured() else "local",
             }
-            _append_chatbot_history(request.user.pk, message, payload["reply"], None)
-            return Response(payload)
+            return _respond(payload)
 
         intent = detect_intent(message, history=prior_messages)
         ctx_limit = 8 if intent != "summarize" else 6
@@ -488,8 +507,7 @@ class ChatbotView(APIView):
                 "intent": intent,
                 "powered_by": "gemini" if is_chatbot_configured() else "local",
             }
-            _append_chatbot_history(request.user.pk, message, payload["reply"], None)
-            return Response(payload)
+            return _respond(payload)
 
         if intent == "off_topic":
             try:
@@ -508,8 +526,7 @@ class ChatbotView(APIView):
                 "intent": intent,
                 "powered_by": "gemini" if is_chatbot_configured() else "local",
             }
-            _append_chatbot_history(request.user.pk, message, payload["reply"], None)
-            return Response(payload)
+            return _respond(payload)
 
         if intent in ("no_match", "off_topic") or not articles:
             is_off = intent == "off_topic" or not has_news_intent(message, history=prior_messages)
@@ -537,8 +554,7 @@ class ChatbotView(APIView):
                 "intent": resolved_intent,
                 "powered_by": "gemini" if is_chatbot_configured() else "local",
             }
-            _append_chatbot_history(request.user.pk, message, payload["reply"], None)
-            return Response(payload)
+            return _respond(payload)
 
         if not articles and not is_chatbot_configured():
             payload = {
@@ -547,8 +563,7 @@ class ChatbotView(APIView):
                 "primary_article": None,
                 "has_trak_article": False,
             }
-            _append_chatbot_history(request.user.pk, message, payload["reply"], None)
-            return Response(payload)
+            return _respond(payload)
 
         reply = ""
         if is_chatbot_configured():
@@ -610,14 +625,7 @@ class ChatbotView(APIView):
             "intent": intent,
             "powered_by": "gemini" if is_chatbot_configured() else "local",
         }
-        _append_chatbot_history(
-            request.user.pk,
-            message,
-            payload["reply"],
-            primary_payload,
-            related=serialized,
-        )
-        return Response(payload)
+        return _respond(payload, primary=primary_payload, related=serialized)
 
 
 def _append_chatbot_history(
@@ -649,12 +657,37 @@ def _append_chatbot_history(
     col.update_one({"user_id": user_id}, {"$set": {"messages": messages}}, upsert=True)
 
 
+class ChatbotConversationsView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        return Response({"conversations": list_conversations(request.user.pk)})
+
+
+class ChatbotConversationDetailView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request, conversation_id):
+        conv = get_conversation(request.user.pk, conversation_id)
+        if not conv:
+            return Response({"detail": "Conversation not found."}, status=status.HTTP_404_NOT_FOUND)
+        return Response(conv)
+
+    def delete(self, request, conversation_id):
+        if delete_conversation(request.user.pk, conversation_id):
+            return Response({"detail": "Conversation deleted."}, status=status.HTTP_200_OK)
+        return Response({"detail": "Conversation not found."}, status=status.HTTP_404_NOT_FOUND)
+
+
 class ChatbotHistoryView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request):
-        col = chatbot_history_collection()
-        row = col.find_one({"user_id": request.user.pk}) or {}
+        conversations = list_conversations(request.user.pk)
+        if conversations:
+            conv = get_conversation(request.user.pk, conversations[0]["id"])
+            return Response({"messages": (conv or {}).get("messages") or []})
+        row = chatbot_history_collection().find_one({"user_id": request.user.pk}) or {}
         return Response({"messages": row.get("messages") or []})
 
     def delete(self, request):
