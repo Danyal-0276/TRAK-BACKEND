@@ -543,6 +543,48 @@ SCRAPE_SCHEDULE_LOCK_TTL_SECONDS = max(
     3600, int(os.environ.get("SCRAPE_SCHEDULE_LOCK_TTL_SECONDS", "10800"))
 )
 
+# Zero-shot category classification + semantic keyword embeddings (news/categorization/)
+CATEGORY_CLASSIFIER_ENABLED = os.environ.get("CATEGORY_CLASSIFIER_ENABLED", "true").strip().lower() in (
+    "1",
+    "true",
+    "yes",
+    "on",
+)
+CATEGORY_CLASSIFIER_MODEL = os.environ.get(
+    "CATEGORY_CLASSIFIER_MODEL", "typeform/distilbert-base-uncased-mnli"
+).strip()
+CATEGORY_CONFIDENCE_THRESHOLD = float(os.environ.get("CATEGORY_CONFIDENCE_THRESHOLD", "0.28"))
+CATEGORY_PRIMARY_MIN_CONFIDENCE = float(os.environ.get("CATEGORY_PRIMARY_MIN_CONFIDENCE", "0.35"))
+CATEGORY_SECONDARY_MIN_CONFIDENCE = float(os.environ.get("CATEGORY_SECONDARY_MIN_CONFIDENCE", "0.38"))
+CATEGORY_BROWSE_PRIMARY_ONLY = os.environ.get("CATEGORY_BROWSE_PRIMARY_ONLY", "false").strip().lower() in (
+    "1",
+    "true",
+    "yes",
+    "on",
+)
+CATEGORY_MAX_LABELS = max(1, min(8, int(os.environ.get("CATEGORY_MAX_LABELS", "3"))))
+CATEGORY_HYPOTHESIS_TEMPLATE = os.environ.get(
+    "CATEGORY_HYPOTHESIS_TEMPLATE", "This news article is about {}."
+).strip()
+CATEGORY_MAX_INPUT_CHARS = max(256, int(os.environ.get("CATEGORY_MAX_INPUT_CHARS", "1500")))
+CATEGORY_RULE_FALLBACK_ENABLED = os.environ.get("CATEGORY_RULE_FALLBACK_ENABLED", "true").strip().lower() in (
+    "1",
+    "true",
+    "yes",
+    "on",
+)
+KEYWORD_EMBEDDING_ENABLED = os.environ.get("KEYWORD_EMBEDDING_ENABLED", "true").strip().lower() in (
+    "1",
+    "true",
+    "yes",
+    "on",
+)
+KEYWORD_EMBEDDING_MODEL = os.environ.get(
+    "KEYWORD_EMBEDDING_MODEL", "sentence-transformers/all-MiniLM-L6-v2"
+).strip()
+KEYWORD_EMBEDDING_THRESHOLD = float(os.environ.get("KEYWORD_EMBEDDING_THRESHOLD", "0.42"))
+KEYWORD_EMBEDDING_MAX_CHARS = max(128, int(os.environ.get("KEYWORD_EMBEDDING_MAX_CHARS", "2000")))
+
 # BART news summarizer (HF Space preferred; Hub id is fallback when SUMMARIZER_SPACE_ID unset)
 SUMMARIZER_MODEL_ID = os.environ.get("SUMMARIZER_MODEL_ID", "").strip() or None
 SUMMARIZER_ENABLED = os.environ.get("SUMMARIZER_ENABLED", "true").strip()

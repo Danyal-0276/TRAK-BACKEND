@@ -1,6 +1,6 @@
 """
 Process raw_articles with pipeline_status=pending → processed_articles + done/failed.
-Stages: clean text → credibility → BART summary (HF) → NER (names/places/orgs).
+Stages: clean text → credibility → BART summary (HF) → NER → zero-shot categories + keyword embeddings.
 """
 
 from __future__ import annotations
@@ -19,6 +19,7 @@ from news.credibility.inference import predict_credibility
 from news.article_media import article_image_url
 from news.mongo_db import processed_collection, raw_collection
 from news.notifications.keyword_alerts import notify_keyword_matches_for_article
+from news.categorization.enrich import enrich_article_ml_fields
 from news.pipeline.errors import is_transient_pipeline_error
 from news.pipeline.keywords import extract_topic_keywords
 from news.pipeline.ner import extract_entities, ner_model_id
@@ -82,6 +83,7 @@ def process_one_raw(doc: dict) -> dict[str, Any]:
     summary = sanitize_article_summary(sum_result["summary"], title=title, body=cleaned)
     entities = extract_entities(cleaned, title=title)
     topic_keywords = extract_topic_keywords(cleaned, title, summary, entities)
+    ml_fields = enrich_article_ml_fields(title=title, summary=summary, clean_text=cleaned)
     published_at = doc.get("published_at")
     now = datetime.now(timezone.utc)
     image_url = article_image_url(doc)
@@ -100,6 +102,7 @@ def process_one_raw(doc: dict) -> dict[str, Any]:
         "topic_keywords": topic_keywords,
         "processed_at": now,
         "language": "en",
+        **ml_fields,
         "model_versions": {
             "fake_detection": cred.get("fake_detection_model_id"),
             "fact_checker": cred.get("fact_check_provider") if cred.get("fact_check_enabled") else "disabled",
@@ -107,6 +110,8 @@ def process_one_raw(doc: dict) -> dict[str, Any]:
             "ner": ner_model_id(),
             "summarizer": sum_result.get("summarizer_model_id"),
             "summarizer_mode": sum_result.get("summarizer_mode"),
+            "category": ml_fields.get("category_model_id") or "",
+            "match_embedding": ml_fields.get("match_embedding_model_id") or "",
         },
         **cred,
     }

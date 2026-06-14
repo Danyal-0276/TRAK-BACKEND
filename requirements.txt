@@ -39,6 +39,7 @@ transformers>=4.40,<5
 sentencepiece>=0.2,<1
 numpy>=1.26,<3
 scipy>=1.11,<2
+sentence-transformers>=3.0,<4
 
 # Fast article TTS (Edge neural voices; optional fallback to Vits/HF above)
 edge-tts>=7.0,<8

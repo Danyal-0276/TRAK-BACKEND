@@ -13,7 +13,13 @@ from news.credibility.score import (
 )
 from news.article_media import article_image_url, hydrate_processed_image_urls
 from news.article_text import build_card_summary, sanitize_article_body
-from news.category_matching import article_matches_category, interest_matches_hay, user_follows_all_categories
+from news.category_matching import (
+    article_matches_category,
+    interest_matches_article,
+    user_follows_all_categories,
+)
+from news.categorization.labels import category_slug
+from news.categorization.matching import article_browse_slugs, browse_primary_only_enabled
 from news.moderation_rules import article_visible_to_users, user_feed_visibility_clause
 from news.mongo_db import processed_collection, raw_collection, reactions_collection, user_keywords_collection
 from news.services.feed_cache import explore_cache_key, get_cached_explore, set_cached_explore
@@ -39,6 +45,11 @@ PROCESSED_FEED_PROJECTION = {
     "credibility_probs": 1,
     "credibility_labels_map": 1,
     "topic_keywords": 1,
+    "primary_category": 1,
+    "categories": 1,
+    "category_scores": 1,
+    "category_confidence": 1,
+    "match_embedding": 1,
     "entities": 1,
     "image_url": 1,
 }
@@ -82,8 +93,8 @@ def _doc_haystack(doc: dict) -> str:
     return " ".join(parts).lower()
 
 
-def _keyword_matches_hay(keyword: str, hay: str) -> bool:
-    return interest_matches_hay(keyword, hay)
+def _keyword_matches_doc(doc: dict, keyword: str) -> bool:
+    return interest_matches_article(doc, keyword)
 
 
 def _matches_feed_filters(
@@ -95,7 +106,7 @@ def _matches_feed_filters(
         return False
     hay = _doc_haystack(doc)
     if user_keywords and not user_follows_all_categories(user_keywords):
-        if not any(_keyword_matches_hay(k, hay) for k in user_keywords):
+        if not any(_keyword_matches_doc(doc, k) for k in user_keywords):
             return False
     q = (search_q or "").strip().lower()
     if q and not _search_matches_hay(hay, q):
@@ -156,6 +167,9 @@ def article_to_api_dict(doc: dict, *, for_list: bool = False) -> dict:
             "fact_check_sources": doc.get("fact_check_urls") or [],
         },
         "topic_keywords": doc.get("topic_keywords") or [],
+        "primary_category": doc.get("primary_category") or "",
+        "categories": list(doc.get("categories") or []),
+        "category_confidence": doc.get("category_confidence"),
         "image_url": article_image_url(doc),
         "like_count": 0,
         "dislike_count": 0,
@@ -242,6 +256,43 @@ def _search_filter_clause(q: str) -> dict:
             {"topic_keywords": {"$regex": escaped, "$options": "i"}},
         ]
     }
+
+
+def _category_browse_query_clause(category: str) -> dict:
+    """Mongo pre-filter for category browse (primary only or primary + ML labels)."""
+    cat_key = category_slug((category or "").strip())
+    if not cat_key:
+        return {}
+    if browse_primary_only_enabled():
+        return {"primary_category": cat_key}
+    return {"$or": [{"primary_category": cat_key}, {"categories": cat_key}]}
+
+
+def get_primary_category_counts() -> dict[str, int]:
+    """Count visible processed articles per browse category (supports multi-label)."""
+    proc = processed_collection()
+    match: dict[str, Any] = {
+        **user_feed_visibility_clause(),
+        "$or": [
+            {"primary_category": {"$exists": True, "$nin": ["", None]}},
+            {"categories.0": {"$exists": True}},
+        ],
+    }
+    projection = {
+        "primary_category": 1,
+        "categories": 1,
+        "category_scores": 1,
+        "credibility_label": 1,
+        "credibility_label_name": 1,
+        "moderation_status": 1,
+    }
+    out: dict[str, int] = {}
+    for doc in proc.find(match, projection):
+        if not article_visible_to_users(doc):
+            continue
+        for slug in article_browse_slugs(doc):
+            out[slug] = out.get(slug, 0) + 1
+    return out
 
 
 def _merge_query(*parts: dict) -> dict:
@@ -677,10 +728,20 @@ def get_explore_feed_page(
 
     proc = processed_collection()
     batch_size = max(page_size * 4, 80)
+    category_total = None
+    if cat and not cursor:
+        category_total = proc.count_documents(
+            _merge_query(
+                _search_filter_clause(q),
+                user_feed_visibility_clause(),
+                _category_browse_query_clause(cat),
+            )
+        )
     query = _merge_query(
         _query_after_cursor(cursor or ""),
         _search_filter_clause(q),
         user_feed_visibility_clause(),
+        _category_browse_query_clause(cat),
     )
 
     out: list[dict] = []
@@ -739,6 +800,7 @@ def get_explore_feed_page(
             _query_after_cursor(next_scan_cursor),
             _search_filter_clause(q),
             user_feed_visibility_clause(),
+            _category_browse_query_clause(cat),
         )
 
     next_cursor = _cursor_payload_from_doc(last_seen_doc or {})
@@ -748,6 +810,8 @@ def get_explore_feed_page(
 
     hydrate_article_reaction_counts(out)
     page = {"results": out, "next_cursor": next_cursor if has_more else None, "has_more": has_more}
+    if category_total is not None:
+        page["category_total"] = category_total
     if not q and not cat and not cursor:
         set_cached_explore(cache_key, page)
     return page

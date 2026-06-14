@@ -111,6 +111,9 @@ def ensure_all_article_indexes() -> None:
     proc.create_index([("processed_at", DESCENDING), ("_id", DESCENDING)])
     proc.create_index([("credibility_label", ASCENDING)])
     proc.create_index([("topic_keywords", ASCENDING)])
+    proc.create_index([("primary_category", ASCENDING)])
+    proc.create_index([("categories", ASCENDING)])
+    proc.create_index([("primary_category", ASCENDING), ("processed_at", DESCENDING)])
     try:
         proc.create_index(
             [("title", TEXT), ("summary", TEXT), ("clean_text", TEXT)],
