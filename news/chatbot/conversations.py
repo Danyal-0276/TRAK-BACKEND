@@ -19,6 +19,28 @@ def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def _to_iso(value: Any) -> str | None:
+    if value is None:
+        return None
+    if hasattr(value, "isoformat"):
+        return value.isoformat()
+    text = str(value).strip()
+    return text or None
+
+
+def _last_message_at(messages: list[dict]) -> datetime | Any | None:
+    for msg in reversed(messages):
+        ts = msg.get("created_at")
+        if ts is not None:
+            return ts
+    return None
+
+
+def _conversation_updated_at(row: dict, messages: list[dict]) -> str | None:
+    updated = _last_message_at(messages) or row.get("updated_at") or row.get("created_at")
+    return _to_iso(updated)
+
+
 def _title_from_message(text: str, *, max_len: int = 48) -> str:
     cleaned = " ".join(str(text or "").split()).strip()
     if not cleaned:
@@ -43,11 +65,13 @@ def _serialize_conversation(row: dict, *, include_messages: bool = False) -> dic
     if len(preview) > 80:
         preview = preview[:79].rstrip() + "…"
 
-    updated = row.get("updated_at") or row.get("created_at")
+    updated = _conversation_updated_at(row, messages)
+    created = _to_iso(row.get("created_at")) or updated
     payload: dict[str, Any] = {
         "id": str(row.get("_id") or ""),
         "title": str(row.get("title") or DEFAULT_TITLE),
-        "updated_at": updated.isoformat() if hasattr(updated, "isoformat") else updated,
+        "created_at": created,
+        "updated_at": updated,
         "preview": preview,
         "message_count": len(messages),
     }
@@ -156,12 +180,13 @@ def append_conversation_exchange(
         row = col.find_one({"_id": oid}) or {"messages": [], "title": title}
 
     messages = list(row.get("messages") or [])
-    messages.append({"role": "user", "text": user_text})
+    messages.append({"role": "user", "text": user_text, "created_at": now})
     top = primary_article or {}
     messages.append(
         {
             "role": "bot",
             "text": bot_text,
+            "created_at": now,
             "article_id": top.get("id"),
             "article_title": top.get("title"),
             "article_path": top.get("trak_path"),
