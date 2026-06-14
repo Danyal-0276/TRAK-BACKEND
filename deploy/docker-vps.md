@@ -65,6 +65,8 @@ Production tweaks in `.env`:
 
 ```env
 DJANGO_DEBUG=False
+# Required until nginx/SSL on the VPS — otherwise HTTP 301 → https://ip:8000 and Vercel/mobile break.
+DJANGO_SECURE_SSL_REDIRECT=False
 DJANGO_ALLOWED_HOSTS=your-domain.com,your-vps-ip,.your-domain.com
 CORS_ALLOWED_ORIGINS=https://trak-flax.vercel.app
 CSRF_TRUSTED_ORIGINS=https://your-domain.com,https://trak-flax.vercel.app
@@ -73,6 +75,8 @@ SOCIAL_AUTH_FRONTEND_URL=https://trak-flax.vercel.app/login
 MONGODB_URI=mongodb+srv://...
 # FIREBASE: paste JSON or mount firebase-service-account.json
 ```
+
+**Docker Compose + `.env`:** do not use `$` in `DJANGO_SECRET_KEY` (Compose treats `$foo` as a variable). If you see `The "h7bxs9rmuf" variable is not set`, remove `$` from the secret or regenerate the key.
 
 Atlas **Network Access**: allow the VPS IP (e.g. `167.86.110.151`).
 
@@ -164,6 +168,10 @@ Do **not** run heavy `run_news_cycle` inside the API container. Use systemd time
 | Issue | Fix |
 |-------|-----|
 | App down after dockerizing | `docker compose up -d --build` and check `docker compose logs api` |
+| `The "h7bxs9rmuf" variable is not set` | Remove `$` from `DJANGO_SECRET_KEY` in server `.env` (Compose interprets `$var`) |
+| `curl: (56) Recv failure` right after `up` | Wait 1–3 min (migrate + collectstatic), then `docker compose logs api --tail=80` |
+| Health returns 301 | Set `DJANGO_SECURE_SSL_REDIRECT=False` in server `.env` until nginx SSL |
+| Migrate fails | Atlas → Network Access → allow VPS IP; verify `MONGODB_URI` in `.env` |
 | Port 8000 in use on PC | Stop old Daphne: `netstat -ano \| findstr :8000` then kill PID |
 | Deploy can’t pull image | Check `READ_GHCR_TOKEN` and package permissions |
 | 502 from nginx | `curl http://127.0.0.1:8000/api/accounts/health/` on VPS |
