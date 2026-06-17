@@ -102,10 +102,34 @@ HEADLINE_PHRASES = (
     "recent news",
     "today's news",
     "todays news",
+    "news for today",
+    "news today",
+    "today in news",
     "what's new",
     "whats new",
+    "what new",
+    "what happened today",
+    "what's happening today",
+    "whats happening today",
+    "catch me up",
+    "brief me",
+    "morning briefing",
+    "evening briefing",
+    "daily briefing",
     "trending",
     "breaking news",
+)
+
+SIMPLE_EXPLAIN_PATTERN = re.compile(
+    r"(?i)\b("
+    r"explain\s+(?:simply|in\s+simple\s+terms|like\s+i'?m\s+\d+)"
+    r"|eli5|make\s+it\s+simple|simple\s+terms"
+    r"|break\s+it\s+down\s+for\s+me"
+    r")\b",
+)
+
+COMPARE_PATTERN = re.compile(
+    r"(?i)\b(compare|comparison|versus|vs\.?|difference\s+between|how\s+do\s+.+\s+compare)\b",
 )
 
 IDENTITY_PATTERN = re.compile(
@@ -428,6 +452,14 @@ def classify_empty_result(message: str, *, had_search_hits: bool = False) -> str
     if had_search_hits:
         return "no_match"
     return "no_match" if has_news_intent(message) else "off_topic"
+
+
+def wants_simple_explanation(message: str) -> bool:
+    return bool(SIMPLE_EXPLAIN_PATTERN.search(normalize_user_message(message)))
+
+
+def wants_comparison(message: str) -> bool:
+    return bool(COMPARE_PATTERN.search(normalize_user_message(message)))
 
 
 def detect_intent(message: str, *, history: list[dict] | None = None) -> str:

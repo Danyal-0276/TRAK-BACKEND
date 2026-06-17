@@ -189,7 +189,7 @@ SECURITY_BLOCK_PATTERN = re.compile(
 APP_HELP_PATTERN = re.compile(
     r"(?i)\b("
     r"how\s+(?:do\s+i|to)\s+(?:use|navigate|find|enable|set\s+up|get\s+started\s+with)\s+"
-    r"(?:trak|the\s+app|this\s+app|mobile|website|web)"
+    r"(?:trak|the\s+trak\s+app|the\s+app|this\s+app|mobile|website|web)"
     r"|how\s+(?:do\s+i|to)\s+(?:bookmark|save|subscribe|follow|customize)"
     r"|(?:user\s+)?manual|app\s+help|help\s+(?:me\s+)?(?:use|with)\s+(?:trak|the\s+app|mobile|features?)"
     r"|what\s+(?:does|can)\s+trak\s+(?:do|offer|have)"
@@ -245,6 +245,11 @@ def is_app_help_message(message: str) -> bool:
     if not text:
         return False
     if is_security_sensitive_message(text):
+        return False
+    if re.search(
+        r"(?i)\bwho\s+(?:made|built|created|developed)\s+(?:you|trak\b|this|the\s+bot|the\s+assistant)\b",
+        text,
+    ):
         return False
     if APP_HELP_PATTERN.search(text):
         return True
