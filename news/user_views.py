@@ -46,6 +46,7 @@ from news.chatbot import (
     is_chatbot_configured,
     pick_primary_article,
     sanitize_bot_reply,
+    select_response_articles,
     serialize_chat_article,
 )
 from news.chatbot.intents import (
@@ -559,10 +560,6 @@ class ChatbotView(APIView):
             history=prior_messages,
         )
         search_message = resolve_search_message(message, prior_messages)
-        primary = pick_primary_article(search_message, articles)
-        if intent == "headlines" and articles and not primary:
-            primary = articles[0]
-        db_match = has_strong_article_match(search_message, primary)
 
         if intent in ("no_match", "off_topic") or not articles:
             is_off = intent == "off_topic" or not has_news_intent(message, history=prior_messages)
@@ -601,56 +598,60 @@ class ChatbotView(APIView):
             }
             return _respond(payload)
 
+        context_articles, card_articles = select_response_articles(
+            search_message,
+            articles,
+            intent=intent,
+            card_limit=3 if intent != "summarize" else 5,
+            context_limit=5,
+        )
+        gemini_articles = context_articles or articles[:5]
+        primary = pick_primary_article(search_message, card_articles or gemini_articles)
+        if intent == "headlines" and card_articles and not primary:
+            primary = card_articles[0]
+        db_match = has_strong_article_match(search_message, primary)
+
         reply = ""
         if is_chatbot_configured():
             try:
                 reply = generate_chatbot_reply(
                     message,
-                    articles,
+                    gemini_articles,
                     prior_messages,
                     intent=intent,
                     has_db_match=db_match,
                 )
             except ChatbotConfigError:
-                reply = fallback_reply(message, articles, primary=primary, intent=intent)
+                reply = fallback_reply(message, gemini_articles, primary=primary, intent=intent)
             except ChatbotAPIError as exc:
                 logger.warning("Gemini chat failed, using local fallback: %s", exc)
-                reply = fallback_reply(message, articles, primary=primary, intent=intent)
+                reply = fallback_reply(message, gemini_articles, primary=primary, intent=intent)
         else:
-            reply = fallback_reply(message, articles, primary=primary, intent=intent)
+            reply = fallback_reply(message, gemini_articles, primary=primary, intent=intent)
 
-        if intent == "summarize" and articles:
-            primary = primary or articles[0]
+        if intent == "summarize" and card_articles:
+            primary = primary or card_articles[0]
             db_match = True
 
-        serialized = [serialize_chat_article(a) for a in articles[:5]]
+        serialized = [serialize_chat_article(a) for a in card_articles]
         serialized = [a for a in serialized if a]
-        primary_payload = serialize_chat_article(primary) if db_match else None
-
-        if intent in ("headlines", "summarize"):
-            linkable = serialized[:5] if intent == "summarize" else serialized[:3]
-        else:
-            linkable = []
-            for art in articles[:3]:
-                if has_strong_article_match(search_message, art):
-                    row = serialize_chat_article(art)
-                    if row:
-                        linkable.append(row)
+        primary_payload = serialize_chat_article(primary) if db_match and primary else None
+        linkable = serialized[:5] if intent == "summarize" else serialized[:3]
 
         reply = sanitize_bot_reply(reply)
-        if intent in ("summarize", "headlines") and articles:
+        if intent in ("summarize", "headlines") and card_articles:
             reply = finalize_reply_with_article_cards(
                 reply,
                 linkable,
                 intent=intent,
-                source_articles=articles,
+                source_articles=card_articles,
             )
         elif linkable:
             reply = finalize_reply_with_article_cards(
                 reply,
                 linkable,
                 intent=intent,
-                source_articles=articles,
+                source_articles=card_articles,
             )
 
         payload = {

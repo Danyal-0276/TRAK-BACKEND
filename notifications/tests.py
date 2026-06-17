@@ -1,14 +1,93 @@
 from datetime import datetime, timedelta, timezone
+from unittest.mock import MagicMock, patch
 
 from django.contrib.auth import get_user_model
-from django.test import override_settings
+from django.test import TestCase, override_settings
 from rest_framework import status
 from rest_framework.test import APITestCase
 
 from news.mongo_db import notifications_collection
+from notifications.fcm import _is_deliverable_fcm_token, send_fcm_to_user
 from notifications.user_scope import user_notifications_query
 
 User = get_user_model()
+
+REAL_FCM_TOKEN = "f" * 142
+
+
+class FcmTokenValidationTests(TestCase):
+    def test_accepts_realistic_fcm_token(self):
+        self.assertTrue(_is_deliverable_fcm_token(REAL_FCM_TOKEN))
+
+    def test_rejects_short_tokens(self):
+        self.assertFalse(_is_deliverable_fcm_token("abc"))
+
+    def test_rejects_placeholder_tokens(self):
+        self.assertFalse(_is_deliverable_fcm_token("trak-web-123456789012345678901234567890"))
+        self.assertFalse(_is_deliverable_fcm_token("trak-mobile-123456789012345678901234567890"))
+
+
+@override_settings(DEBUG=True, SECURE_SSL_REDIRECT=False)
+class DeviceTokenRegisterTests(APITestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(
+            email="fcm@test.com", password="StrongPass123!", role="user"
+        )
+        self.client.force_authenticate(self.user)
+
+    def test_rejects_fake_mobile_token(self):
+        res = self.client.post(
+            "/api/notifications/device-token/",
+            {"token": "trak-mobile-fake", "platform": "mobile"},
+            format="json",
+        )
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_accepts_real_mobile_token(self):
+        res = self.client.post(
+            "/api/notifications/device-token/",
+            {"token": REAL_FCM_TOKEN, "platform": "mobile"},
+            format="json",
+        )
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+
+    def test_rejects_fake_web_token(self):
+        res = self.client.post(
+            "/api/notifications/device-token/",
+            {"token": "trak-web-fake-token-placeholder", "platform": "web"},
+            format="json",
+        )
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+
+
+class FcmSendTests(TestCase):
+    @patch("notifications.fcm._ensure_app")
+    def test_skips_when_fcm_disabled(self, mock_ensure):
+        mock_ensure.return_value = None
+        stats = send_fcm_to_user(1, "Title", "Body")
+        self.assertEqual(stats, {"attempted": 0, "success": 0, "failure": 0})
+
+    @patch("notifications.fcm._ensure_app")
+    @patch("news.mongo_db.device_tokens_collection")
+    @patch("firebase_admin.messaging.send_each_for_multicast")
+    def test_filters_placeholder_tokens(self, mock_send_fn, mock_coll_fn, mock_ensure):
+        mock_ensure.return_value = object()
+        coll = MagicMock()
+        mock_coll_fn.return_value = coll
+        coll.find.return_value = [
+            {"token": "trak-mobile-placeholder-not-real"},
+            {"token": REAL_FCM_TOKEN},
+        ]
+        mock_result = MagicMock()
+        mock_result.responses = [MagicMock(success=True, exception=None)]
+        mock_send_fn.return_value = mock_result
+
+        stats = send_fcm_to_user(42, "Hello", "World", data={"type": "system"})
+
+        self.assertEqual(stats["attempted"], 1)
+        self.assertEqual(stats["success"], 1)
+        sent_tokens = mock_send_fn.call_args.args[0].tokens
+        self.assertEqual(sent_tokens, [REAL_FCM_TOKEN])
 
 
 @override_settings(DEBUG=True, SECURE_SSL_REDIRECT=False)
@@ -36,7 +115,7 @@ class UserNotificationScopeTests(APITestCase):
         self.col = notifications_collection()
 
     def test_list_hides_notifications_before_account_creation(self):
-        joined = self.user.date_joined.astimezone(timezone.utc)
+        joined = self.user.created_at.astimezone(timezone.utc)
         old = joined - timedelta(hours=2)
         new = joined + timedelta(minutes=5)
         self.col.insert_many(
@@ -68,7 +147,7 @@ class UserNotificationScopeTests(APITestCase):
         self.assertNotIn("old alert", texts)
 
     def test_unread_count_respects_account_creation(self):
-        joined = self.user.date_joined.astimezone(timezone.utc)
+        joined = self.user.created_at.astimezone(timezone.utc)
         self.col.insert_one(
             {
                 "user_id": self.user.pk,
