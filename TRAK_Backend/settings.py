@@ -565,16 +565,17 @@ CATEGORY_CLASSIFIER_ENABLED = os.environ.get("CATEGORY_CLASSIFIER_ENABLED", "tru
 CATEGORY_CLASSIFIER_MODEL = os.environ.get(
     "CATEGORY_CLASSIFIER_MODEL", "typeform/distilbert-base-uncased-mnli"
 ).strip()
-CATEGORY_CONFIDENCE_THRESHOLD = float(os.environ.get("CATEGORY_CONFIDENCE_THRESHOLD", "0.28"))
-CATEGORY_PRIMARY_MIN_CONFIDENCE = float(os.environ.get("CATEGORY_PRIMARY_MIN_CONFIDENCE", "0.35"))
-CATEGORY_SECONDARY_MIN_CONFIDENCE = float(os.environ.get("CATEGORY_SECONDARY_MIN_CONFIDENCE", "0.38"))
-CATEGORY_BROWSE_PRIMARY_ONLY = os.environ.get("CATEGORY_BROWSE_PRIMARY_ONLY", "false").strip().lower() in (
+CATEGORY_CONFIDENCE_THRESHOLD = float(os.environ.get("CATEGORY_CONFIDENCE_THRESHOLD", "0.32"))
+CATEGORY_PRIMARY_MIN_CONFIDENCE = float(os.environ.get("CATEGORY_PRIMARY_MIN_CONFIDENCE", "0.40"))
+CATEGORY_SECONDARY_MIN_CONFIDENCE = float(os.environ.get("CATEGORY_SECONDARY_MIN_CONFIDENCE", "0.45"))
+CATEGORY_SECONDARY_RELATIVE_MIN = float(os.environ.get("CATEGORY_SECONDARY_RELATIVE_MIN", "0.72"))
+CATEGORY_BROWSE_PRIMARY_ONLY = os.environ.get("CATEGORY_BROWSE_PRIMARY_ONLY", "true").strip().lower() in (
     "1",
     "true",
     "yes",
     "on",
 )
-CATEGORY_MAX_LABELS = max(1, min(8, int(os.environ.get("CATEGORY_MAX_LABELS", "3"))))
+CATEGORY_MAX_LABELS = max(1, min(8, int(os.environ.get("CATEGORY_MAX_LABELS", "2"))))
 CATEGORY_HYPOTHESIS_TEMPLATE = os.environ.get(
     "CATEGORY_HYPOTHESIS_TEMPLATE", "This news article is about {}."
 ).strip()

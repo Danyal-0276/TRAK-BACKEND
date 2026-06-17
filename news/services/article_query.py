@@ -29,12 +29,10 @@ User = get_user_model()
 ID_LABELS = {0: "real", 1: "fake", 2: "suspicious"}
 
 # Fields loaded from processed_articles for feed/explore (never raw_articles).
-PROCESSED_FEED_PROJECTION = {
+PROCESSED_LIST_PROJECTION = {
     "_id": 1,
     "title": 1,
     "summary": 1,
-    "clean_text": 1,
-    "normalized_text": 1,
     "canonical_url": 1,
     "raw_canonical_url": 1,
     "source_key": 1,
@@ -47,12 +45,25 @@ PROCESSED_FEED_PROJECTION = {
     "topic_keywords": 1,
     "primary_category": 1,
     "categories": 1,
-    "category_scores": 1,
     "category_confidence": 1,
-    "match_embedding": 1,
-    "entities": 1,
     "image_url": 1,
 }
+
+# Extra text fields for keyword/search matching (avoid heavy match_embedding vectors).
+PROCESSED_SEARCH_PROJECTION = {
+    **PROCESSED_LIST_PROJECTION,
+    "clean_text": 1,
+    "normalized_text": 1,
+    "entities": 1,
+    "normalized_terms": 1,
+}
+
+# Backward-compatible alias for callers expecting the old name.
+PROCESSED_FEED_PROJECTION = PROCESSED_SEARCH_PROJECTION
+
+
+def _feed_batch_size(page_size: int, *, multiplier: int = 2, floor: int = 60, cap: int = 120) -> int:
+    return min(max(page_size * multiplier, floor), cap)
 
 
 def _oid_str(doc: dict) -> str:
@@ -123,12 +134,22 @@ def article_to_api_dict(doc: dict, *, for_list: bool = False) -> dict:
     """Shape for mobile/web clients. Processed documents only — no raw_articles."""
     cid = _oid_str(doc)
     title = doc.get("title") or ""
-    full_text = sanitize_article_body(_article_full_text(doc), title=title)
-    summary = build_card_summary(
-        title=title,
-        stored_summary=doc.get("summary") or "",
-        body=_article_full_text(doc),
-    )
+    if for_list:
+        summary = (doc.get("summary") or "").strip()
+        if not summary:
+            summary = build_card_summary(
+                title=title,
+                stored_summary="",
+                body=_article_full_text(doc),
+            )
+        full_text = ""
+    else:
+        full_text = sanitize_article_body(_article_full_text(doc), title=title)
+        summary = build_card_summary(
+            title=title,
+            stored_summary=doc.get("summary") or "",
+            body=_article_full_text(doc),
+        )
     source = doc.get("source_key") or ""
     published = doc.get("published_at")
     if isinstance(published, datetime):
@@ -269,19 +290,14 @@ def _category_browse_query_clause(category: str) -> dict:
 
 
 def get_primary_category_counts() -> dict[str, int]:
-    """Count visible processed articles per browse category (supports multi-label)."""
+    """Count visible processed articles per browse category (primary category only)."""
     proc = processed_collection()
     match: dict[str, Any] = {
         **user_feed_visibility_clause(),
-        "$or": [
-            {"primary_category": {"$exists": True, "$nin": ["", None]}},
-            {"categories.0": {"$exists": True}},
-        ],
+        "primary_category": {"$exists": True, "$nin": ["", None]},
     }
     projection = {
         "primary_category": 1,
-        "categories": 1,
-        "category_scores": 1,
         "credibility_label": 1,
         "credibility_label_name": 1,
         "moderation_status": 1,
@@ -290,7 +306,8 @@ def get_primary_category_counts() -> dict[str, int]:
     for doc in proc.find(match, projection):
         if not article_visible_to_users(doc):
             continue
-        for slug in article_browse_slugs(doc):
+        slug = category_slug(doc.get("primary_category") or "")
+        if slug:
             out[slug] = out.get(slug, 0) + 1
     return out
 
@@ -333,7 +350,7 @@ def get_user_feed_page(
 
     proc = processed_collection()
     page_size = max(1, min(int(limit or 30), 100))
-    batch_size = max(page_size * 4, 80)
+    batch_size = _feed_batch_size(page_size)
     query = _merge_query(
         _query_after_cursor(cursor or ""),
         _search_filter_clause(q),
@@ -346,7 +363,7 @@ def get_user_feed_page(
 
     while len(out) < page_size:
         docs = list(
-            proc.find(query, PROCESSED_FEED_PROJECTION)
+            proc.find(query, PROCESSED_SEARCH_PROJECTION)
             .sort([("processed_at", -1), ("_id", -1)])
             .limit(batch_size)
         )
@@ -389,7 +406,7 @@ def get_user_feed_page(
             )
             while True:
                 docs = list(
-                    proc.find(probe_query, PROCESSED_FEED_PROJECTION)
+                    proc.find(probe_query, PROCESSED_SEARCH_PROJECTION)
                     .sort([("processed_at", -1), ("_id", -1)])
                     .limit(batch_size)
                 )
@@ -590,21 +607,24 @@ def _explore_rank_score(doc: dict, now: datetime) -> float:
 
 
 def _rank_for_diversity(docs: list[dict], now: datetime, take: int) -> list[dict]:
-    ranked = sorted(docs, key=lambda d: _explore_rank_score(d, now), reverse=True)
+    if not docs or take <= 0:
+        return []
+    scored = [(doc, _explore_rank_score(doc, now)) for doc in docs]
+    scored.sort(key=lambda pair: pair[1], reverse=True)
     source_counts: dict[str, int] = {}
     chosen: list[dict] = []
-    remaining = ranked[:]
+    remaining = scored[:]
     while remaining and len(chosen) < take:
         best_idx = 0
         best_val = float("-inf")
-        for idx, doc in enumerate(remaining):
+        for idx, (doc, base_score) in enumerate(remaining):
             src = str(doc.get("source_key") or "unknown")
             diversity_penalty = 0.12 * source_counts.get(src, 0)
-            val = _explore_rank_score(doc, now) - diversity_penalty
+            val = base_score - diversity_penalty
             if val > best_val:
                 best_val = val
                 best_idx = idx
-        picked = remaining.pop(best_idx)
+        picked, _ = remaining.pop(best_idx)
         src = str(picked.get("source_key") or "unknown")
         source_counts[src] = source_counts.get(src, 0) + 1
         chosen.append(picked)
@@ -634,7 +654,7 @@ def get_pics_feed_page(
     q = (search_q or "").strip().lower()
     page_size = max(1, min(int(limit or 30), 200))
     proc = processed_collection()
-    batch_size = max(page_size * 5, 100)
+    batch_size = _feed_batch_size(page_size, multiplier=3, cap=150)
     query = _merge_query(
         _query_after_cursor(cursor or ""),
         _search_filter_clause(q),
@@ -645,10 +665,11 @@ def get_pics_feed_page(
     last_seen_doc: Optional[dict] = None
     now = datetime.now(timezone.utc)
     last_batch_len = 0
+    list_projection = PROCESSED_LIST_PROJECTION if not q else PROCESSED_SEARCH_PROJECTION
 
     while len(out) < page_size:
         fetched = list(
-            proc.find(query, PROCESSED_FEED_PROJECTION)
+            proc.find(query, list_projection)
             .sort([("processed_at", -1), ("_id", -1)])
             .limit(batch_size)
         )
@@ -720,14 +741,16 @@ def get_explore_feed_page(
     q = (search_q or "").strip().lower()
     cat = (category or "").strip()
     page_size = max(1, min(int(limit or 30), 200))
+    cacheable = not q and not cat
     cache_key = explore_cache_key(limit=page_size, q=q, cursor=cursor)
-    if not q and not cat and not cursor:
+    if cacheable:
         cached = get_cached_explore(cache_key)
         if cached is not None:
+            hydrate_article_reaction_counts(cached.get("results") or [])
             return cached
 
     proc = processed_collection()
-    batch_size = max(page_size * 4, 80)
+    batch_size = _feed_batch_size(page_size)
     category_total = None
     if cat and not cursor:
         category_total = proc.count_documents(
@@ -748,10 +771,11 @@ def get_explore_feed_page(
     last_seen_doc: Optional[dict] = None
     now = datetime.now(timezone.utc)
     last_batch_len = 0
+    list_projection = PROCESSED_LIST_PROJECTION if not q and not cat else PROCESSED_SEARCH_PROJECTION
 
     while len(out) < page_size:
         docs = list(
-            proc.find(query, PROCESSED_FEED_PROJECTION)
+            proc.find(query, list_projection)
             .sort([("processed_at", -1), ("_id", -1)])
             .limit(batch_size)
         )
@@ -782,8 +806,6 @@ def get_explore_feed_page(
                     continue
             filtered.append(doc)
 
-        _hydrate_docs_images(filtered)
-
         ranked_batch = _rank_for_diversity(filtered, now, take=page_size - len(out))
         for doc in ranked_batch:
             out.append(article_to_api_dict(doc, for_list=True))
@@ -812,6 +834,6 @@ def get_explore_feed_page(
     page = {"results": out, "next_cursor": next_cursor if has_more else None, "has_more": has_more}
     if category_total is not None:
         page["category_total"] = category_total
-    if not q and not cat and not cursor:
-        set_cached_explore(cache_key, page)
+    if cacheable:
+        set_cached_explore(cache_key, page, cursor=cursor)
     return page
