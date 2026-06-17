@@ -22,6 +22,7 @@ from news.services.feed_cache import invalidate_explore_cache
 logger = logging.getLogger("news.pipeline.auto")
 
 _LOCK_ID = "auto_drain"
+_CYCLE_LOCK_ID = "pipeline_cycle"
 _thread_started = False
 _thread_guard = threading.Lock()
 _local_guard = threading.Lock()
@@ -134,6 +135,79 @@ def pipeline_backlog_count() -> int:
     return pending + processing
 
 
+def _lock_held(lock_id: str, *, clear_stale: bool = False) -> bool:
+    if clear_stale:
+        try:
+            from news.schedule.scrape_scheduler import clear_stale_scrape_lock
+
+            clear_stale_scrape_lock()
+        except Exception:
+            pass
+    doc = _locks_collection().find_one({"_id": lock_id}) or {}
+    locked_until = doc.get("locked_until")
+    if not locked_until:
+        return False
+    if getattr(locked_until, "tzinfo", None) is None:
+        locked_until = locked_until.replace(tzinfo=timezone.utc)
+    return locked_until > datetime.now(timezone.utc)
+
+
+def _scheduled_scrape_lock_held() -> bool:
+    """True while a scheduled/full scrape cycle holds the shared Mongo lock."""
+    return _lock_held("scheduled_scrape", clear_stale=True)
+
+
+def _pipeline_cycle_lock_held() -> bool:
+    """True while run_news_cycle is running in the cron/manual pipeline container."""
+    return _lock_held(_CYCLE_LOCK_ID)
+
+
+def external_pipeline_cycle_active() -> bool:
+    """True when cron/manual full cycle should own the queue (API auto must yield)."""
+    return _scheduled_scrape_lock_held() or _pipeline_cycle_lock_held()
+
+
+def try_acquire_pipeline_cycle_lock() -> bool:
+    """Held for the duration of run_news_cycle (cron container / manual full cycle)."""
+    clear_stale_auto_lock()
+    col = _locks_collection()
+    now = datetime.now(timezone.utc)
+    holder = _holder_tag()
+    ttl = max(3600, int(getattr(settings, "SCRAPE_SCHEDULE_LOCK_TTL_SECONDS", 10800)))
+    lock_update = {
+        "locked_until": now + timedelta(seconds=ttl),
+        "locked_at": now,
+        "holder": holder,
+    }
+    doc = col.find_one_and_update(
+        {
+            "_id": _CYCLE_LOCK_ID,
+            "$or": [
+                {"locked_until": {"$lte": now}},
+                {"locked_until": {"$exists": False}},
+            ],
+        },
+        {"$set": lock_update},
+        return_document=ReturnDocument.AFTER,
+    )
+    if doc and doc.get("holder") == holder:
+        return True
+    try:
+        col.insert_one({"_id": _CYCLE_LOCK_ID, **lock_update})
+        return True
+    except DuplicateKeyError:
+        return False
+
+
+def release_pipeline_cycle_lock() -> None:
+    col = _locks_collection()
+    now = datetime.now(timezone.utc)
+    col.update_one(
+        {"_id": _CYCLE_LOCK_ID, "holder": _holder_tag()},
+        {"$set": {"locked_until": now}},
+    )
+
+
 def drain_pending_queue_if_needed(*, reason: str = "auto") -> Optional[dict[str, Any]]:
     """
     If pending raw articles exist, run the pipeline until the queue is empty.
@@ -144,6 +218,11 @@ def drain_pending_queue_if_needed(*, reason: str = "auto") -> Optional[dict[str,
     pending = pending_count()
     backlog = pipeline_backlog_count()
     if backlog < min_pending:
+        return None
+
+    # Yield to cron/manual full cycle in the pipeline container (avoid two ML workers).
+    if external_pipeline_cycle_active():
+        logger.debug("auto pipeline skipped (%s): external pipeline cycle active", reason)
         return None
 
     if not _local_guard.acquire(blocking=False):
@@ -196,16 +275,29 @@ def drain_pending_queue_if_needed(*, reason: str = "auto") -> Optional[dict[str,
 
 
 def _auto_loop() -> None:
+    on_interval = bool(getattr(settings, "PIPELINE_AUTO_ON_INTERVAL", True))
     interval = max(30, int(getattr(settings, "PIPELINE_AUTO_INTERVAL_SECONDS", 90)))
-    logger.info("auto pipeline loop started (interval=%ss)", interval)
+    backlog_check = max(0, int(getattr(settings, "PIPELINE_AUTO_BACKLOG_CHECK_SECONDS", 900)))
+    if on_interval:
+        wait_seconds = interval
+        logger.info("auto pipeline loop started (interval=%ss)", interval)
+    else:
+        wait_seconds = backlog_check if backlog_check > 0 else 86400
+        logger.info(
+            "auto pipeline loop started (on-demand + backlog check every %ss)",
+            wait_seconds,
+        )
     while True:
         try:
-            drain_pending_queue_if_needed(reason="interval")
+            if on_interval:
+                drain_pending_queue_if_needed(reason="interval")
+            elif pipeline_backlog_count() > 0:
+                drain_pending_queue_if_needed(reason="backlog")
         except Exception:
-            logger.exception("auto pipeline interval drain failed")
+            logger.exception("auto pipeline loop drain failed")
         finally:
             close_old_connections()
-        _wake.wait(timeout=interval)
+        _wake.wait(timeout=wait_seconds)
         _wake.clear()
 
 

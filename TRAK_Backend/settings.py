@@ -521,8 +521,19 @@ PIPELINE_AUTO_ENABLED = os.environ.get("PIPELINE_AUTO_ENABLED", "true").strip().
     "yes",
     "on",
 )
+# When false, API auto only runs on admin scrape kick + periodic backlog checks (VPS production).
+PIPELINE_AUTO_ON_INTERVAL = os.environ.get("PIPELINE_AUTO_ON_INTERVAL", "true").strip().lower() in (
+    "true",
+    "1",
+    "yes",
+    "on",
+)
 PIPELINE_AUTO_INTERVAL_SECONDS = max(
     30, int(os.environ.get("PIPELINE_AUTO_INTERVAL_SECONDS", "90"))
+)
+# Used when PIPELINE_AUTO_ON_INTERVAL=false — how often to check for leftover pending/failed rows.
+PIPELINE_AUTO_BACKLOG_CHECK_SECONDS = max(
+    0, int(os.environ.get("PIPELINE_AUTO_BACKLOG_CHECK_SECONDS", "900"))
 )
 PIPELINE_AUTO_BATCH_SIZE = max(1, min(500, int(os.environ.get("PIPELINE_AUTO_BATCH_SIZE", "50"))))
 PIPELINE_AUTO_MIN_PENDING = max(1, int(os.environ.get("PIPELINE_AUTO_MIN_PENDING", "1")))

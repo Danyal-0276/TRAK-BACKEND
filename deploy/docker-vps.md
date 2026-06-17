@@ -7,7 +7,8 @@ Web stays on **Vercel**. Mobile is separate. This guide is **Django API only** (
 | Piece | Where |
 |-------|--------|
 | `trak-api` container | VPS — Daphne API 24/7 (`docker compose up -d`) |
-| `pipeline` container | VPS — one-shot scrape + AI pipeline (cron, **not** always running) |
+| `pipeline` container @ 2 AM | **Full cycle** — scrape + AI pipeline (separate container) |
+| `trak-api` auto worker | **Leftovers only** — admin scrape kick + backlog check every 15 min |
 | `.env` + Firebase JSON | **On the server only** — never in git |
 | MongoDB | Atlas (`MONGODB_URI` in server `.env`) |
 | Web | Vercel (`vercel.json` → VPS `:8000`) |
@@ -70,9 +71,10 @@ Production tweaks in `.env`:
 DJANGO_DEBUG=False
 # Required until nginx/SSL on the VPS — otherwise HTTP 301 → https://ip:8000 and Vercel/mobile break.
 DJANGO_SECURE_SSL_REDIRECT=False
-# Auto-process pending raw articles in the API container (~every 90s). Light; no scraping.
+# Light auto on API (leftovers only). Full daily cycle = pipeline container + cron (§7).
 PIPELINE_AUTO_ENABLED=true
-# Daily scrape stays OFF in API — use pipeline container + cron (§7) instead.
+PIPELINE_AUTO_ON_INTERVAL=false
+PIPELINE_AUTO_BACKLOG_CHECK_SECONDS=900
 SCRAPE_SCHEDULE_ENABLED=false
 DJANGO_ALLOWED_HOSTS=your-domain.com,your-vps-ip,.your-domain.com
 CORS_ALLOWED_ORIGINS=https://trak-flax.vercel.app
@@ -164,19 +166,31 @@ VITE_API_URL=https://api.yourdomain.com
 
 ---
 
-## 7. Daily scrape + pipeline (separate container + cron)
+## 7. Daily full cycle (pipeline container) + light auto on API
 
-The API container should **not** run daily scrape (`SCRAPE_SCHEDULE_ENABLED=false`). Keep `PIPELINE_AUTO_ENABLED=true` so pending raw articles (from admin scrape-only or cron) are processed automatically every ~90s.
+| Job | Who | What |
+|-----|-----|------|
+| **2 AM cron** | `pipeline` container | **Scrape + full AI pipeline** (heavy work off the API) |
+| **Admin “Run scrape”** | API | Scrape → auto kicks in to process |
+| **Leftover queue / errors** | API auto | Checks every **15 min** only if backlog exists |
+| **During cron run** | API auto | **Paused** (Mongo lock — no conflict) |
 
-Instead, use the **`pipeline` compose service** — same Docker image as `api`, but runs once and exits:
+Set in `.env` on the API:
+
+```env
+PIPELINE_AUTO_ENABLED=true
+PIPELINE_AUTO_ON_INTERVAL=false
+PIPELINE_AUTO_BACKLOG_CHECK_SECONDS=900
+SCRAPE_SCHEDULE_ENABLED=false
+```
+
+- `PIPELINE_AUTO_ON_INTERVAL=false` — API does **not** run ML every 90s.
+- Cron container runs the **full** `run_news_cycle` (scrape + pipeline).
 
 ```bash
 cd ~/trak
 docker compose --profile pipeline run --rm pipeline
 ```
-
-This runs `python manage.py run_news_cycle` (scrape up to 100 articles + pipeline up to 100 pending).
-Uses `run_news_cycle` instead of `run_scheduled_scrape` so it works on older GHCR images and is not blocked by `SCRAPE_SCHEDULE_ENABLED=false` in `.env`.
 
 ```bash
 chmod +x ~/trak/deploy/run-pipeline.sh
