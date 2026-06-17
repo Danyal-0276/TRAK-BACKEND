@@ -11,6 +11,10 @@
 #   export API_IMAGE=ghcr.io/<owner>/trak-api:<git-sha>
 #   docker compose up -d --no-build --force-recreate
 #
+# Daily scrape + pipeline (separate one-shot container — does not touch the API):
+#   docker compose --profile pipeline run --rm pipeline
+#   # or: ./deploy/run-pipeline.sh
+#
 # MongoDB on Atlas for normal dev/prod. Web = Vercel. Mobile = separate app.
 
 services:
@@ -34,6 +38,23 @@ services:
       timeout: 5s
       retries: 12
       start_period: 120s
+
+  # One-shot scrape + AI pipeline (same image as api; never started by `docker compose up -d`).
+  # Trigger manually or via cron — see deploy/docker-vps.md and deploy/run-pipeline.sh
+  pipeline:
+    profiles: [pipeline]
+    build: .
+    image: ${API_IMAGE:-trak-api:local}
+    env_file:
+      - .env
+    volumes:
+      - ./firebase-service-account.json:/app/firebase-service-account.json:ro
+    environment:
+      PIPELINE_AUTO_ENABLED: "false"
+      SCRAPE_SCHEDULE_ENABLED: "false"
+    entrypoint: ["python", "manage.py"]
+    command: ["run_scheduled_scrape"]
+    restart: "no"
 
   mongodb:
     profiles: [localdb]
