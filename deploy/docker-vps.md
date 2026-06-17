@@ -174,7 +174,8 @@ cd ~/trak
 docker compose --profile pipeline run --rm pipeline
 ```
 
-Or the helper script (after `git pull`):
+This runs `python manage.py run_news_cycle` (scrape up to 100 articles + pipeline up to 100 pending).
+Uses `run_news_cycle` instead of `run_scheduled_scrape` so it works on older GHCR images and is not blocked by `SCRAPE_SCHEDULE_ENABLED=false` in `.env`.
 
 ```bash
 chmod +x ~/trak/deploy/run-pipeline.sh
@@ -230,4 +231,4 @@ Alternative without cron: systemd timer + bare Python venv — see `vps-systemd.
 | Port 8000 in use on PC | Stop old Daphne: `netstat -ano \| findstr :8000` then kill PID |
 | Deploy can’t pull image | Check `READ_GHCR_TOKEN` and package permissions |
 | 502 from nginx | `curl http://127.0.0.1:8000/api/accounts/health/` on VPS |
-| CORS errors from Vercel | Add Vercel URL to `CORS_ALLOWED_ORIGINS` in server `.env` |
+| Pipeline fails: `Unknown command: run_scheduled_scrape` | `git pull` then re-run; compose now uses `run_news_cycle`. Or run manually: `docker compose --profile pipeline run --rm pipeline` |

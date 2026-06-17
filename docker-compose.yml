@@ -53,7 +53,17 @@ services:
       PIPELINE_AUTO_ENABLED: "false"
       SCRAPE_SCHEDULE_ENABLED: "false"
     entrypoint: ["python", "manage.py"]
-    command: ["run_scheduled_scrape"]
+    # run_news_cycle: full scrape + pipeline (works on all deployed images; ignores SCRAPE_SCHEDULE_ENABLED).
+    command:
+      - run_news_cycle
+      - --total-limit
+      - "100"
+      - --scrape-limit
+      - "40"
+      - --no-pipeline-all
+      - --pipeline-limit
+      - "100"
+      - --requeue-stale
     restart: "no"
 
   mongodb:
