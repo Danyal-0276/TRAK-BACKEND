@@ -67,6 +67,9 @@ Production tweaks in `.env`:
 DJANGO_DEBUG=False
 # Required until nginx/SSL on the VPS — otherwise HTTP 301 → https://ip:8000 and Vercel/mobile break.
 DJANGO_SECURE_SSL_REDIRECT=False
+# Keep heavy scrape/pipeline OUT of the API container (prevents OOM / random restarts).
+PIPELINE_AUTO_ENABLED=false
+SCRAPE_SCHEDULE_ENABLED=false
 DJANGO_ALLOWED_HOSTS=your-domain.com,your-vps-ip,.your-domain.com
 CORS_ALLOWED_ORIGINS=https://trak-flax.vercel.app
 CSRF_TRUSTED_ORIGINS=https://your-domain.com,https://trak-flax.vercel.app
