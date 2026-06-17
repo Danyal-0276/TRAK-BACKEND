@@ -798,8 +798,8 @@ def get_explore_feed_page(
             last_seen_doc = doc
             if not article_visible_to_users(doc):
                 continue
-            if cat and not article_matches_category(doc, cat):
-                continue
+            # Category is already constrained in the Mongo query; re-applying ML slug
+            # rules here caused empty browse previews while category_counts stayed high.
             if q:
                 hay = _doc_haystack(doc)
                 if not _search_matches_hay(hay, q):
