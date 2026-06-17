@@ -1,4 +1,4 @@
-"""Show scheduled scrape policy state (24h window + 100-article cap)."""
+"""Show scheduled scrape policy state (24h window + daily article cap)."""
 
 from django.core.management.base import BaseCommand
 

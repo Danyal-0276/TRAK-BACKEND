@@ -604,6 +604,7 @@ class AdminScrapeRunView(APIView):
                 "scrape_limit": scrape_limit,
                 "total_limit": scrape_limit,
                 "fair_source_split": True,
+                "fair_connection_split": True,
                 "before": before,
                 "after": after,
                 "delta": {
@@ -656,6 +657,7 @@ class AdminScrapeAndPipelineRunView(APIView):
                 "scrape_limit": scrape_limit,
                 "total_limit": scrape_limit,
                 "fair_source_split": True,
+                "fair_connection_split": True,
                 "pipeline_limit": pipeline_limit,
                 "before": before,
                 "after": after,

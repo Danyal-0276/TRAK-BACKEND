@@ -20,9 +20,9 @@ from news.mongo_db import get_db
 
 logger = logging.getLogger("news.schedule.scrape")
 
-# Hard policy: one scheduled scrape every 24 hours, at most 100 new articles per run.
+# Hard policy: one scheduled scrape every 24 hours, at most SCRAPE_SCHEDULE_TOTAL_LIMIT new articles per run.
 DAILY_SCRAPE_INTERVAL_HOURS = 24
-DAILY_SCRAPE_ARTICLE_LIMIT = 100
+DAILY_SCRAPE_ARTICLE_LIMIT = 150
 
 _LOCK_ID = "scheduled_scrape"
 _thread_started = False
@@ -55,7 +55,8 @@ def _interval_hours() -> int:
 
 
 def _article_limit() -> int:
-    return DAILY_SCRAPE_ARTICLE_LIMIT
+    configured = int(getattr(settings, "SCRAPE_SCHEDULE_TOTAL_LIMIT", DAILY_SCRAPE_ARTICLE_LIMIT))
+    return max(1, min(500, configured))
 
 
 def _schedule_sources() -> list[str]:
@@ -208,8 +209,8 @@ def _record_last_run(*, inserted: int = 0) -> None:
 
 def run_scheduled_scrape_cycle() -> int:
     """
-    Scrape up to DAILY_SCRAPE_ARTICLE_LIMIT new articles, then pipeline up to the same cap.
-    Returns the number of new raw articles inserted (<= 100).
+    Scrape up to SCRAPE_SCHEDULE_TOTAL_LIMIT new articles, then pipeline up to the same cap.
+    Returns the number of new raw articles inserted (<= configured limit).
     """
     total = _article_limit()
     workers = max(1, min(8, int(getattr(settings, "PIPELINE_WORKERS", 1))))

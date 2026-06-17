@@ -57,12 +57,12 @@ services:
     command:
       - run_news_cycle
       - --total-limit
-      - "100"
+      - "150"
       - --scrape-limit
       - "40"
       - --no-pipeline-all
       - --pipeline-limit
-      - "100"
+      - "150"
       - --requeue-stale
     restart: "no"
 
