@@ -19,6 +19,7 @@ from news.chatbot.intents import (
 from news.chatbot.gemini_chat import (
     _normalize_text,
     build_local_summary_paragraph,
+    fallback_reply,
     finalize_reply_with_article_cards,
     finalize_summarize_reply,
     format_related_articles_intro,
@@ -34,6 +35,49 @@ class ChatbotIntentTests(SimpleTestCase):
 
     def test_headlines_intent(self):
         self.assertEqual(detect_intent("Top tech headlines today"), "headlines")
+        self.assertEqual(detect_intent("What's new for today"), "headlines")
+        self.assertEqual(detect_intent("what new for today"), "headlines")
+        self.assertEqual(detect_intent("Catch me up on the news"), "headlines")
+
+    def test_headlines_briefing_finalize(self):
+        articles = [
+            {"id": "1", "title": "Markets rally on earnings", "summary": "Global stocks rose after strong tech earnings."},
+            {"id": "2", "title": "Summit on trade", "summary": "Leaders met to discuss new trade rules."},
+            {"id": "3", "title": "Storm warning", "summary": "Coastal areas prepared for severe weather."},
+        ]
+        linkable = [{"id": a["id"], "title": a["title"]} for a in articles]
+        out = finalize_reply_with_article_cards("", linkable, intent="headlines", source_articles=articles)
+        self.assertIn("Global stocks rose", out)
+        self.assertIn("headlines", out.lower())
+        self.assertLess(out.lower().index("global stocks"), out.lower().index("headlines"))
+
+    def test_search_briefing_finalize(self):
+        articles = [
+            {"id": "1", "title": "Pakistan economy grows", "summary": "Islamabad reported stronger export numbers this quarter."},
+            {"id": "2", "title": "Reform package", "summary": "Officials outlined new fiscal reforms."},
+        ]
+        linkable = [{"id": "1", "title": articles[0]["title"]}]
+        gemini = (
+            "Pakistan's economy showed momentum this quarter as exports improved. "
+            "Officials also signaled upcoming fiscal reforms."
+        )
+        out = finalize_reply_with_article_cards(
+            gemini,
+            linkable,
+            intent="search",
+            source_articles=articles,
+        )
+        self.assertIn("exports improved", out.lower())
+        self.assertIn("here's an article", out.lower())
+
+    def test_fallback_headlines_includes_summary(self):
+        articles = [
+            {"id": "1", "title": "A", "summary": "Markets rose today on strong earnings."},
+            {"id": "2", "title": "B", "summary": "Leaders met to discuss trade policy."},
+        ]
+        out = fallback_reply("What's new today", articles, intent="headlines")
+        self.assertIn("Markets rose", out)
+        self.assertIn("headlines", out.lower())
 
     def test_summarize_intent(self):
         self.assertEqual(detect_intent("Summarize Pakistan news"), "summarize")
@@ -165,7 +209,7 @@ class ChatbotIntentTests(SimpleTestCase):
 
     def test_related_intro_single(self):
         intro = format_related_articles_intro(1)
-        self.assertIn("article I found", intro.lower())
+        self.assertIn("here's an article", intro.lower())
         self.assertNotIn("We have this in TRAK", intro)
 
     def test_finalize_strips_title_dump(self):
@@ -178,7 +222,7 @@ class ChatbotIntentTests(SimpleTestCase):
         out = finalize_reply_with_article_cards(bloated, linkable)
         self.assertNotIn("We have this in TRAK", out)
         self.assertNotIn(title, out)
-        self.assertIn("article I found", out.lower())
+        self.assertIn("alova transforms", out.lower())
 
     def test_finalize_no_duplicate_intro(self):
         intro = format_related_articles_intro(3, intent="headlines")

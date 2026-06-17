@@ -35,6 +35,8 @@ from news.chatbot.intents import (
     is_off_topic_message,
     resolve_search_message,
     should_link_article,
+    wants_comparison,
+    wants_simple_explanation,
 )
 from news.services import article_query
 
@@ -55,17 +57,19 @@ Scope:
 Voice & style:
 - Sound like a sharp newsroom assistant: clear, direct, conversational.
 - Lead with the answer to what the user asked — do not open with filler ("Certainly!", "Great question!").
-- Use plain English. Short sentences. No markdown headings or bullet lists unless summarizing.
+- Write substantive answers: synthesize facts into a short briefing (usually 3–6 sentences), not one-liners.
+- Use plain English. No markdown headings or bullet lists unless the user asked for a list.
 
 Grounding rules:
 1. Use ONLY the TRAK article context provided in each user turn.
 2. NEVER output http:// or https:// links or tell users to visit external websites.
-3. When TRAK has matching articles, the app shows article cards below your message — do NOT repeat article titles, sources, or long summaries in your text.
-4. For matching articles: write 1-2 sentences that capture the main theme, region, or development (who/what/why at a high level). The UI already introduces them as "articles I found".
-5. If no relevant articles in context, say TRAK does not have that story yet; do not claim loose matches.
-6. If the user asks about coding, homework, recipes, jokes, or other non-news topics, say you only help with news and suggest a news question — do not invent related articles.
-7. If the user asks a follow-up ("tell me more", "what else"), use conversation history plus article context to stay on topic.
-8. NEVER disclose API keys, backend code, database details, infrastructure, or internal endpoints.
+3. When TRAK has matching articles, the app shows article cards below your message — do NOT repeat article titles or source names in your text.
+4. For matching articles: write a cohesive news briefing — who/what/where, key developments, and why it matters — woven from the provided summaries.
+5. Do NOT tell users to "tap cards below" or mention TRAK UI; the app adds that automatically.
+6. If no relevant articles in context, say TRAK does not have that story yet; do not claim loose matches.
+7. If the user asks about coding, homework, recipes, jokes, or other non-news topics, say you only help with news and suggest a news question — do not invent related articles.
+8. If the user asks a follow-up ("tell me more", "what else"), use conversation history plus article context to stay on topic.
+9. NEVER disclose API keys, backend code, database details, infrastructure, or internal endpoints.
 """
 
 OFF_TOPIC_GEMINI_INSTRUCTION = """You are TRAK AI in the TRAK news app, created by the TRAK team.
@@ -378,20 +382,25 @@ def format_summarize_intro(count: int) -> str:
     )
 
 
-def build_local_summary_paragraph(articles: list[dict], *, max_chars: int = 650) -> str:
-    """Fallback: combine article summaries into one short paragraph."""
+def build_local_summary_paragraph(
+    articles: list[dict],
+    *,
+    max_chars: int = 900,
+    intent: str = "search",
+) -> str:
+    """Fallback: combine article summaries into a newsroom-style briefing."""
     if not articles:
         return "TRAK does not have enough content to summarize that topic yet."
 
     sentences: list[str] = []
-    for art in articles[:4]:
+    for art in articles[:5]:
         summary = str(art.get("summary") or art.get("excerpt") or "").strip()
         title = str(art.get("title") or "").strip()
         if summary and title and _normalize_text(summary) == _normalize_text(title):
             summary = ""
         if summary:
             first = re.split(r"(?<=[.!?])\s+", summary)[0].strip()
-            if first and first not in sentences:
+            if first and _normalize_text(first) not in {_normalize_text(s) for s in sentences}:
                 sentences.append(first.rstrip(".") + ".")
             continue
 
@@ -401,10 +410,87 @@ def build_local_summary_paragraph(articles: list[dict], *, max_chars: int = 650)
             "See the article cards below for full coverage."
         )
 
-    paragraph = " ".join(sentences)
+    if intent == "headlines":
+        opener = "Here's what's standing out in TRAK right now: "
+    elif intent == "summarize":
+        opener = "Here's a quick read on that topic: "
+    else:
+        opener = ""
+
+    if len(sentences) == 1:
+        paragraph = opener + sentences[0]
+    elif len(sentences) == 2:
+        paragraph = opener + sentences[0] + " " + sentences[1]
+    else:
+        lead = opener + sentences[0]
+        middle = " ".join(sentences[1:-1])
+        tail = sentences[-1]
+        paragraph = f"{lead} {middle} {tail}".strip()
+
     if len(paragraph) > max_chars:
         paragraph = paragraph[: max_chars - 3].rsplit(" ", 1)[0] + "..."
     return paragraph
+
+
+def _scenario_instruction(message: str, intent: str) -> str:
+    """Extra Gemini guidance for common user phrasings (safe, news-only)."""
+    notes: list[str] = []
+    if wants_simple_explanation(message):
+        notes.append("Use plain language suitable for a general audience — short sentences, no jargon.")
+    if wants_comparison(message):
+        notes.append(
+            "The user wants a comparison: highlight key similarities and differences across the stories, "
+            "still in one paragraph."
+        )
+    if intent == "headlines":
+        notes.append(
+            "Treat this as a daily briefing: lead with the biggest story, then cover 2–3 other notable developments."
+        )
+    return " ".join(notes)
+
+
+def _news_match_instruction(
+    message: str,
+    intent: str,
+    *,
+    has_db_match: bool,
+    articles: list[dict],
+) -> str:
+    """Prompt fragment for Gemini when TRAK articles are in context."""
+    scenario = _scenario_instruction(message, intent)
+    scenario_suffix = f" {scenario}" if scenario else ""
+
+    if intent == "summarize":
+        return (
+            "The user wants a SUMMARY. Write exactly ONE paragraph (4–6 sentences) in newsroom style. "
+            "Open with the biggest takeaway, then cover supporting facts and themes from ALL articles. "
+            "Use present tense for recent events. Cover key facts only from the provided text. "
+            "Do NOT list article titles or sources. Do NOT mention tapping cards or TRAK UI. "
+            "Do NOT include URLs. Output only the summary paragraph."
+            + scenario_suffix
+        )
+    if intent == "headlines":
+        return (
+            "The user wants a TODAY / HEADLINES BRIEFING. Write ONE paragraph (4–6 sentences). "
+            "Start with the dominant theme or top development, then weave in other notable stories. "
+            "Sound like a concise morning news roundup — facts only from the articles provided. "
+            "Do NOT list titles or sources. Do NOT mention UI or cards. No URLs."
+            + scenario_suffix
+        )
+    if has_db_match and articles:
+        return (
+            "Strong TRAK matches exist. Write ONE paragraph (3–5 sentences) that directly answers the user's question "
+            "and synthesizes the main facts from the articles. "
+            "Do NOT repeat titles or sources — article cards show below."
+            + scenario_suffix
+        )
+    if articles:
+        return (
+            "Loose matches only. In 2–3 sentences, note coverage may be partial, then summarize the closest themes "
+            "from the articles. No titles or sources."
+            + scenario_suffix
+        )
+    return "No TRAK articles — say TRAK does not have this story yet."
 
 
 def format_related_articles_intro(count: int, *, intent: str = "search") -> str:
@@ -452,6 +538,13 @@ def _is_card_cta_sentence(text: str) -> bool:
     if not low or len(low) > 200:
         return False
     tap_card = ("tap" in low and "card" in low) or "tap the card below" in low
+    if tap_card and (
+        "read more" in low
+        or "read the full" in low
+        or "read it" in low
+        or "for the full story" in low
+    ):
+        return True
     if "related articles from trak" in low:
         return True
     if re.search(r"here are \d+ (related )?articles", low) and "trak" in low:
@@ -484,8 +577,28 @@ def _is_card_cta_text(text: str) -> bool:
 
 
 def _is_card_intro_text(text: str) -> bool:
-    """Alias for card CTA detection (search/headlines/summarize intros)."""
-    return _is_card_cta_text(text)
+    """True when the block is only card CTA (one or more CTA sentences)."""
+    stripped = (text or "").strip()
+    if not stripped:
+        return False
+    if _is_card_cta_text(stripped):
+        return True
+    low = _normalize_text(stripped)
+    if "tap" in low and "card" in low and any(
+        marker in low
+        for marker in (
+            "found in trak",
+            "headlines i found",
+            "headline i found",
+            "articles i found",
+            "article i found",
+            "related articles from trak",
+            "trak article i used",
+            "here's the trak article",
+        )
+    ):
+        return True
+    return False
 
 
 def _strip_cta_sentences_from_block(text: str) -> str:
@@ -562,18 +675,50 @@ def _extract_summary_paragraph(reply: str, linkable: list[dict]) -> str:
     for part in parts:
         if _is_card_cta_text(part):
             continue
-        low = part.lower()
-        if any(t.lower() in low for t in _titles_in_linkable(linkable) if len(t) > 20):
-            continue
-        body_parts.append(part)
+        cleaned = part
+        for title in _titles_in_linkable(linkable):
+            if len(title) > 12:
+                cleaned = re.sub(re.escape(title), "", cleaned, flags=re.IGNORECASE)
+        cleaned = _strip_cta_sentences_from_block(cleaned)
+        cleaned = re.sub(r"\s+", " ", cleaned).strip(" .")
+        if len(cleaned) >= 20:
+            body_parts.append(cleaned)
 
     body = "\n\n".join(body_parts).strip()
     body = re.sub(r"\s+", " ", body) if len(body) < 40 else body
-    if len(body) < 40:
+    for phrase in (
+        "We have this in TRAK",
+        "Tap the article card below to read the full story",
+        "Tap the article card below",
+        "Tap any card below to read the full story",
+        "Tap any card below to read more",
+    ):
+        body = re.sub(re.escape(phrase) + r"[^.!?]*[.!?]?", "", body, flags=re.IGNORECASE)
+    body = re.sub(r"\s+", " ", body).strip(" .")
+    if len(body) < 20:
         return ""
     if len(body) > 900:
         body = body[:897].rsplit(" ", 1)[0] + "..."
     return body
+
+
+def finalize_briefing_reply(
+    reply: str,
+    linkable: list[dict],
+    articles: list[dict],
+    *,
+    intent: str = "summarize",
+) -> str:
+    """Summary body first; card CTA at the end (article cards hold titles)."""
+    source = articles or linkable
+    card_cta = format_related_articles_intro(len(linkable) if linkable else len(source), intent=intent)
+    summary = _extract_summary_paragraph(reply, linkable or source)
+    if not summary:
+        summary = build_local_summary_paragraph(source, intent=intent)
+    summary = _strip_card_cta_from_reply(summary)
+    if not summary or _normalize_text(summary) == _normalize_text(card_cta):
+        return card_cta
+    return f"{summary.rstrip()} {card_cta}"
 
 
 def finalize_summarize_reply(
@@ -581,15 +726,7 @@ def finalize_summarize_reply(
     linkable: list[dict],
     articles: list[dict],
 ) -> str:
-    """Summary body first; card CTA sentences only at the end (cards hold titles)."""
-    card_cta = format_summarize_intro(len(linkable) if linkable else len(articles))
-    summary = _extract_summary_paragraph(reply, linkable or articles)
-    if not summary:
-        summary = build_local_summary_paragraph(articles)
-    summary = _strip_card_cta_from_reply(summary)
-    if not summary or _normalize_text(summary) == _normalize_text(card_cta):
-        return card_cta
-    return f"{summary.rstrip()} {card_cta}"
+    return finalize_briefing_reply(reply, linkable, articles, intent="summarize")
 
 
 def finalize_reply_with_article_cards(
@@ -599,33 +736,30 @@ def finalize_reply_with_article_cards(
     intent: str = "search",
     source_articles: list[dict] | None = None,
 ) -> str:
-    if intent == "summarize":
-        return finalize_summarize_reply(
-            reply,
-            linkable,
-            source_articles or linkable,
-        )
     """
-    When the client shows article cards, use a clean intro and optional short insight —
-    never repeat titles/summaries that already appear on the cards.
+    When the client shows article cards, prepend a substantive briefing and end with a short CTA.
     """
     if not linkable:
         return reply
 
-    intro = format_related_articles_intro(len(linkable), intent=intent)
+    source = source_articles or linkable
     cleaned = _dedupe_paragraphs((reply or "").strip())
+    intro = format_related_articles_intro(len(linkable), intent=intent)
+
+    if cleaned and _is_card_intro_text(cleaned):
+        return cleaned
+
+    if intent in ("summarize", "headlines", "search"):
+        return finalize_briefing_reply(reply, linkable, source, intent=intent)
 
     if not cleaned or _normalize_text(cleaned) == _normalize_text(intro):
-        return intro
-
-    if _is_card_intro_text(cleaned):
-        return cleaned
+        return finalize_briefing_reply("", linkable, source, intent=intent)
 
     insight = _extract_short_insight(reply, linkable)
     if insight and _normalize_text(insight) != _normalize_text(intro):
-        return f"{intro}\n\n{insight}"
+        return f"{insight.rstrip()} {intro}"
 
-    return intro
+    return finalize_briefing_reply(reply, linkable, source, intent=intent)
 
 
 def _is_gemini_quota_error(exc: Exception) -> bool:
@@ -830,32 +964,12 @@ def generate_chatbot_reply(
     genai.configure(api_key=api_key)
 
     context_block = _format_articles_block(articles, intent)
-    if intent == "summarize":
-        match_note = (
-            "The user wants a SUMMARY. Write exactly ONE paragraph (4–6 sentences) in newsroom style. "
-            "Open with the biggest takeaway, then cover supporting facts and themes from ALL articles. "
-            "Use present tense for recent events. Cover key facts only from the provided text. "
-            "Do NOT list article titles or sources. Do NOT mention tapping cards or TRAK UI. "
-            "Do NOT include URLs. Output only the summary paragraph."
-        )
-    elif intent == "headlines":
-        match_note = (
-            "Headline request. Write 1-2 sentences: what is dominating the news right now "
-            "(theme or region). Do NOT list titles — cards appear below."
-        )
-    elif has_db_match and articles:
-        match_note = (
-            "Strong TRAK matches exist. Answer the user's question in the first sentence, "
-            "then add one sentence of broader context if helpful. "
-            "Do NOT repeat titles, sources, or summaries — article cards show below."
-        )
-    elif articles:
-        match_note = (
-            "Loose matches only. Briefly note they may not be exact, then give a 1-sentence thematic hint. "
-            "No titles."
-        )
-    else:
-        match_note = "No TRAK articles — say TRAK does not have this story yet."
+    match_note = _news_match_instruction(
+        user_message,
+        intent,
+        has_db_match=has_db_match,
+        articles=articles,
+    )
 
     user_prompt = (
         f"{context_block}\n\n"
@@ -937,17 +1051,31 @@ def fallback_reply(
 
     if intent == "summarize":
         if articles:
-            return build_local_summary_paragraph(articles)
+            linkable = _linkable_from_articles(message, articles, intent=intent)
+            body = build_local_summary_paragraph(articles, intent="summarize")
+            intro = format_related_articles_intro(
+                len(linkable) if linkable else len(articles),
+                intent="summarize",
+            )
+            return f"{body.rstrip()} {intro}"
         return (
             "I couldn't find TRAK articles to summarize for that topic yet. "
             "Try another keyword or check your feed."
         )
 
     linkable = _linkable_from_articles(message, articles, intent=intent)
-    if linkable:
-        return format_related_articles_intro(len(linkable), intent=intent)
+    if linkable or (intent == "headlines" and articles):
+        count = len(linkable) if linkable else min(len(articles), 3)
+        body = build_local_summary_paragraph(
+            articles,
+            intent=intent if intent in ("headlines", "summarize") else "search",
+        )
+        intro = format_related_articles_intro(count, intent=intent if intent == "headlines" else "search")
+        return f"{body.rstrip()} {intro}"
 
     if intent == "headlines" and articles:
-        return format_related_articles_intro(min(len(articles), 3), intent="headlines")
+        body = build_local_summary_paragraph(articles, intent="headlines")
+        intro = format_related_articles_intro(min(len(articles), 3), intent="headlines")
+        return f"{body.rstrip()} {intro}"
 
     return get_no_match_reply()

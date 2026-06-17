@@ -638,7 +638,7 @@ class ChatbotView(APIView):
                         linkable.append(row)
 
         reply = sanitize_bot_reply(reply)
-        if intent == "summarize" and articles:
+        if intent in ("summarize", "headlines") and articles:
             reply = finalize_reply_with_article_cards(
                 reply,
                 linkable,
@@ -650,6 +650,7 @@ class ChatbotView(APIView):
                 reply,
                 linkable,
                 intent=intent,
+                source_articles=articles,
             )
 
         payload = {
