@@ -550,7 +550,7 @@ SCRAPE_SCHEDULE_ENABLED = os.environ.get("SCRAPE_SCHEDULE_ENABLED", "true").stri
 )
 # Fixed policy for the scheduled scraper (see news/schedule/scrape_scheduler.py).
 SCRAPE_SCHEDULE_INTERVAL_HOURS = 24
-SCRAPE_SCHEDULE_TOTAL_LIMIT = 100
+SCRAPE_SCHEDULE_TOTAL_LIMIT = max(1, int(os.environ.get("SCRAPE_SCHEDULE_TOTAL_LIMIT", "150")))
 SCRAPE_SCHEDULE_LOCK_TTL_SECONDS = max(
     3600, int(os.environ.get("SCRAPE_SCHEDULE_LOCK_TTL_SECONDS", "10800"))
 )

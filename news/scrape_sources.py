@@ -119,6 +119,119 @@ def _display_name_for_feed_url(url: str) -> str:
         return "RSS feed"
 
 
+def fair_caps_for_ids(
+    ids: list[str],
+    total_limit: int,
+    *,
+    per_id_max: int | None = None,
+) -> dict[str, int]:
+    """Split a global insert cap evenly across connection/source ids."""
+    n = len(ids)
+    if n == 0:
+        return {}
+    total = max(1, int(total_limit))
+    base, extra = divmod(total, n)
+    caps: dict[str, int] = {}
+    for i, target_id in enumerate(ids):
+        share = base + (1 if i < extra else 0)
+        if share <= 0:
+            caps[target_id] = 0
+            continue
+        share = max(1, share)
+        if per_id_max is not None:
+            share = min(int(per_id_max), share)
+        caps[target_id] = share
+    return caps
+
+
+def _api_key_configured(kind: str) -> bool:
+    key_name = f"{kind.upper()}_API_KEY"
+    return bool((getattr(settings, key_name, "") or "").strip())
+
+
+def _generic_site_scrapeable(conn: dict[str, Any]) -> bool:
+    from news.scrapers.sources.generic_sites import find_site_config
+
+    cfg = find_site_config(
+        source_key=conn.get("source_key"),
+        listing_url=conn.get("url"),
+    )
+    return bool(cfg and cfg.get("enabled", True))
+
+
+def connection_to_scrape_target(conn: dict[str, Any]) -> dict[str, Any] | None:
+    """Map one admin connection row to a scrape target, or None if not scrapeable."""
+    slug = str(conn.get("slug") or conn.get("id") or "").strip()
+    if not slug:
+        return None
+
+    kind = str(conn.get("kind") or "rss").strip().lower()
+    url = (conn.get("url") or "").strip()
+    name = connection_display_name(conn)
+    source_key = (conn.get("source_key") or "").strip() or None
+    scraper_module = (conn.get("scraper_module") or "").strip() or None
+
+    if kind == "rss" or (_is_rss_connection(conn) and kind not in ("builtin", "generic_site")):
+        if not url:
+            return None
+        return {
+            "id": slug,
+            "name": name,
+            "kind": "rss",
+            "url": url,
+            "source_key": source_key or "rss",
+        }
+
+    if kind == "builtin":
+        mod = scraper_module or source_key
+        if mod not in ("dawn", "dunya"):
+            return None
+        return {
+            "id": slug,
+            "name": name,
+            "kind": "builtin",
+            "url": url,
+            "scraper_module": mod,
+            "source_key": source_key or mod,
+        }
+
+    if kind == "generic_site":
+        if not _generic_site_scrapeable(conn):
+            return None
+        return {
+            "id": slug,
+            "name": name,
+            "kind": "generic_site",
+            "url": url,
+            "source_key": source_key,
+        }
+
+    if kind in ("currents", "newsdata", "gnews"):
+        if not _api_key_configured(kind):
+            return None
+        return {
+            "id": slug,
+            "name": name,
+            "kind": kind,
+            "url": url,
+            "source_key": source_key or kind,
+        }
+
+    return None
+
+
+def list_active_scrape_targets() -> list[dict[str, Any]]:
+    """Active admin connections that scrapers can run (one target per Manage Connection row)."""
+    out: list[dict[str, Any]] = []
+    for conn in list_connections():
+        if not conn.get("active", True):
+            continue
+        target = connection_to_scrape_target(conn)
+        if target:
+            out.append(target)
+    return out
+
+
 def connection_display_name(conn: dict[str, Any]) -> str:
     """Human label for admin UI (fixes stored 'Feeds' names from old syncs)."""
     url = (conn.get("url") or "").strip()

@@ -12,8 +12,8 @@ from news.schedule.scrape_scheduler import maybe_run_scheduled_scrape
 
 class Command(BaseCommand):
     help = (
-        "Scrape up to 100 articles (hard cap) and run the AI pipeline. "
-        "Runs at most once every 24 hours (cron/systemd)."
+        "Scrape up to SCRAPE_SCHEDULE_TOTAL_LIMIT articles (hard cap, fair per admin connection) "
+        "and run the AI pipeline. Runs at most once every 24 hours (cron/systemd)."
     )
 
     def handle(self, *args, **options):

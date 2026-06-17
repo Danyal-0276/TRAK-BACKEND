@@ -117,6 +117,118 @@ def discover_article_urls(listing_html: str, listing_url: str, cfg: dict) -> lis
     return sorted(out)
 
 
+def _normalize_url(url: str) -> str:
+    u, _ = urldefrag(url.strip())
+    return u.rstrip("/")
+
+
+def find_site_config(
+    *,
+    source_key: str | None = None,
+    listing_url: str | None = None,
+) -> dict | None:
+    """Resolve a generic-site catalog entry from admin connection metadata."""
+    key = (source_key or "").strip()
+    listing = _normalize_url(listing_url) if listing_url else ""
+    for cfg in _load_site_configs():
+        if key:
+            cfg_key = str(cfg.get("key") or "").strip()
+            cfg_sk = str(cfg.get("source_key") or "").strip()
+            if key in (cfg_key, cfg_sk):
+                return cfg
+        if listing:
+            base = _normalize_url(str(cfg.get("base_url") or ""))
+            if base and base == listing:
+                return cfg
+            for lu in cfg.get("listing_urls") or []:
+                if _normalize_url(str(lu)) == listing:
+                    return cfg
+    return None
+
+
+def run_single_site(client: PoliteHttpClient, *, cfg: dict, limit: int = 30) -> dict:
+    """Scrape one configured generic site up to ``limit`` new articles."""
+    ua = settings.SCRAPER_USER_AGENT
+    if cfg.get("enabled") is False:
+        return {
+            "inserted": 0,
+            "skipped": 0,
+            "source": "generic_sites",
+            "note": "site disabled",
+        }
+
+    key = (cfg.get("key") or "site").strip() or "site"
+    source_key = cfg.get("source_key") or f"generic_{key}"
+    inserted = 0
+    skipped = 0
+    site_cap = max(1, int(limit))
+
+    for listing in cfg.get("listing_urls") or []:
+        if inserted >= site_cap:
+            break
+        listing = listing.strip()
+        if not listing:
+            continue
+        if not robots_util.allowed(listing, ua):
+            continue
+        lr = _get(client, listing)
+        if lr is None or lr.status_code != 200:
+            skipped += 1
+            continue
+        urls = discover_article_urls(lr.text, listing, cfg)
+        for url in urls:
+            if inserted >= site_cap:
+                break
+            if storage.exists_url(url):
+                skipped += 1
+                continue
+            if not robots_util.allowed(url, ua):
+                skipped += 1
+                continue
+            ar = _get(client, url)
+            if ar is None or ar.status_code != 200:
+                skipped += 1
+                continue
+            body = ar.text
+            if len(body.encode("utf-8")) > settings.SCRAPER_MAX_HTML_BYTES:
+                skipped += 1
+                continue
+            extracted = extract_site_config(body, url, cfg)
+            if not extracted:
+                skipped += 1
+                continue
+            doc = build_article_document(
+                canonical_url=url,
+                source_key=source_key,
+                extracted=extracted,
+                http_status=ar.status_code,
+                content_type=ar.headers.get("content-type", ""),
+                extra={
+                    "listing_url": listing,
+                    "site_key": key,
+                    "site_display_name": site_display_name_for_generic(
+                        cfg, url, source_key
+                    ),
+                    "site_host": hostname_from_url(url),
+                    "ingestion_channel": "generic_sites",
+                    "robots_allowed": True,
+                },
+                raw_html=body if settings.SCRAPER_STORE_RAW_HTML else None,
+            )
+            ok = storage.insert_raw_if_new(doc)
+            if ok:
+                inserted += 1
+            else:
+                skipped += 1
+
+    return {
+        "inserted": inserted,
+        "skipped": skipped,
+        "source": "generic_sites",
+        "site_key": key,
+    }
+
+
 def run(client: PoliteHttpClient, *, limit: int = 30, max_total: int | None = None) -> dict:
     ua = settings.SCRAPER_USER_AGENT
     configs = _load_site_configs()

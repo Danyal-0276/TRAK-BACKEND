@@ -56,6 +56,94 @@ def _round_robin_entries(
     return out
 
 
+def _try_insert_rss_entry(
+    client: PoliteHttpClient,
+    *,
+    feed_url: str,
+    entry: Any,
+    ua: str,
+) -> bool:
+    """Fetch one RSS entry link and insert if new. Returns True when inserted."""
+    link = getattr(entry, "link", None) or ""
+    link = (link or "").strip()
+    if not link:
+        return False
+    if storage.exists_url(link):
+        return False
+    if not robots_util.allowed(link, ua):
+        return False
+    try:
+        r = client.get(link)
+    except Exception:
+        return False
+    if r.status_code != 200:
+        return False
+    body = r.text
+    if len(body.encode("utf-8")) > settings.SCRAPER_MAX_HTML_BYTES:
+        return False
+    title_hint = getattr(entry, "title", "") or ""
+    extracted = extract_generic(body, link, fallback_title=title_hint)
+    if not extracted:
+        return False
+    sk = source_key_for_article_url(link)
+    doc = build_article_document(
+        canonical_url=link,
+        source_key=sk,
+        extracted=extracted,
+        http_status=r.status_code,
+        content_type=r.headers.get("content-type", ""),
+        extra={
+            "feed_url": feed_url,
+            "entry_title": (title_hint or "")[:500],
+            "ingestion_channel": "rss",
+            "robots_allowed": True,
+        },
+        raw_html=body if settings.SCRAPER_STORE_RAW_HTML else None,
+    )
+    return bool(storage.insert_raw_if_new(doc))
+
+
+def _entries_for_feed(client: PoliteHttpClient, feed_url: str, ua: str) -> list[Any]:
+    if not robots_util.allowed(feed_url, ua):
+        return []
+    try:
+        fr = client.get(feed_url)
+    except Exception:
+        return []
+    if fr.status_code != 200:
+        return []
+    parsed = feedparser.parse(fr.text)
+    return list(parsed.entries or [])
+
+
+def run_single_feed(client: PoliteHttpClient, *, feed_url: str, limit: int = 30) -> dict:
+    """Scrape one RSS feed URL up to ``limit`` new articles."""
+    ua = settings.SCRAPER_USER_AGENT
+    feed_url = (feed_url or "").strip()
+    if not feed_url:
+        return {"inserted": 0, "skipped": 0, "source": "rss", "note": "empty feed URL"}
+
+    entries = _entries_for_feed(client, feed_url, ua)
+    inserted = 0
+    skipped = 0
+    for entry in entries:
+        if inserted >= limit:
+            break
+        link = (getattr(entry, "link", None) or "").strip()
+        if not link:
+            skipped += 1
+            continue
+        if storage.exists_url(link):
+            skipped += 1
+            continue
+        if _try_insert_rss_entry(client, feed_url=feed_url, entry=entry, ua=ua):
+            inserted += 1
+        else:
+            skipped += 1
+
+    return {"inserted": inserted, "skipped": skipped, "source": "rss", "feed_url": feed_url}
+
+
 def run(client: PoliteHttpClient, *, limit: int = 30) -> dict:
     ua = settings.SCRAPER_USER_AGENT
     feeds = _merged_feed_urls()
@@ -74,50 +162,13 @@ def run(client: PoliteHttpClient, *, limit: int = 30) -> dict:
     for feed_url, entry in queue:
         if inserted >= limit:
             break
-        link = getattr(entry, "link", None) or ""
-        link = (link or "").strip()
+        link = (getattr(entry, "link", None) or "").strip()
         if not link:
             continue
         if storage.exists_url(link):
             skipped += 1
             continue
-        if not robots_util.allowed(link, ua):
-            skipped += 1
-            continue
-        try:
-            r = client.get(link)
-        except Exception:
-            skipped += 1
-            continue
-        if r.status_code != 200:
-            skipped += 1
-            continue
-        body = r.text
-        if len(body.encode("utf-8")) > settings.SCRAPER_MAX_HTML_BYTES:
-            skipped += 1
-            continue
-        title_hint = getattr(entry, "title", "") or ""
-        extracted = extract_generic(body, link, fallback_title=title_hint)
-        if not extracted:
-            skipped += 1
-            continue
-        sk = source_key_for_article_url(link)
-        doc = build_article_document(
-            canonical_url=link,
-            source_key=sk,
-            extracted=extracted,
-            http_status=r.status_code,
-            content_type=r.headers.get("content-type", ""),
-            extra={
-                "feed_url": feed_url,
-                "entry_title": (title_hint or "")[:500],
-                "ingestion_channel": "rss",
-                "robots_allowed": True,
-            },
-            raw_html=body if settings.SCRAPER_STORE_RAW_HTML else None,
-        )
-        ok = storage.insert_raw_if_new(doc)
-        if ok:
+        if _try_insert_rss_entry(client, feed_url=feed_url, entry=entry, ua=ua):
             inserted += 1
         else:
             skipped += 1
