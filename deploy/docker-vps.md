@@ -70,8 +70,9 @@ Production tweaks in `.env`:
 DJANGO_DEBUG=False
 # Required until nginx/SSL on the VPS — otherwise HTTP 301 → https://ip:8000 and Vercel/mobile break.
 DJANGO_SECURE_SSL_REDIRECT=False
-# Keep heavy scrape/pipeline OUT of the API container (prevents OOM / random restarts).
-PIPELINE_AUTO_ENABLED=false
+# Auto-process pending raw articles in the API container (~every 90s). Light; no scraping.
+PIPELINE_AUTO_ENABLED=true
+# Daily scrape stays OFF in API — use pipeline container + cron (§7) instead.
 SCRAPE_SCHEDULE_ENABLED=false
 DJANGO_ALLOWED_HOSTS=your-domain.com,your-vps-ip,.your-domain.com
 CORS_ALLOWED_ORIGINS=https://trak-flax.vercel.app
@@ -165,7 +166,7 @@ VITE_API_URL=https://api.yourdomain.com
 
 ## 7. Daily scrape + pipeline (separate container + cron)
 
-The API container must **not** run scrape/pipeline in the background (`PIPELINE_AUTO_ENABLED=false`, `SCRAPE_SCHEDULE_ENABLED=false` in `.env`).
+The API container should **not** run daily scrape (`SCRAPE_SCHEDULE_ENABLED=false`). Keep `PIPELINE_AUTO_ENABLED=true` so pending raw articles (from admin scrape-only or cron) are processed automatically every ~90s.
 
 Instead, use the **`pipeline` compose service** — same Docker image as `api`, but runs once and exits:
 
