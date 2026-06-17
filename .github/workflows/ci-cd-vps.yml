@@ -98,7 +98,9 @@ jobs:
               git clone https://github.com/Danyal-0276/TRAK-BACKEND.git "${HOME}/trak"
             fi
             cd "${HOME}/trak"
-            git pull origin main
+            # Match GitHub exactly; .env is gitignored and kept on the server.
+            git fetch origin main
+            git reset --hard origin/main
 
             echo "$READ_GHCR_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
 
