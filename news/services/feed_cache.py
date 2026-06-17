@@ -1,33 +1,34 @@
-"""Short-lived in-memory cache for explore page 1 (dev/single-worker friendly)."""
+"""Explore feed response cache (Redis when USE_REDIS=true, else Django locmem)."""
+
 from __future__ import annotations
 
 import time
 from typing import Any, Optional
 
-_EXPLORE_TTL_SEC = 90
-_store: dict[str, tuple[float, dict[str, Any]]] = {}
+from django.core.cache import cache
+
+_CACHE_VERSION_KEY = "trak:feed:explore:version"
+_EXPLORE_TTL_PAGE1 = 120
+_EXPLORE_TTL_PAGE_N = 90
+
+
+def _cache_version() -> int:
+    return int(cache.get(_CACHE_VERSION_KEY) or 1)
 
 
 def explore_cache_key(*, limit: int, q: str, cursor: Optional[str]) -> str:
-    return f"explore:{limit}:{q}:{cursor or ''}"
+    return f"trak:feed:explore:{_cache_version()}:{limit}:{q}:{cursor or ''}"
 
 
 def get_cached_explore(key: str) -> Optional[dict[str, Any]]:
-    entry = _store.get(key)
-    if not entry:
-        return None
-    ts, data = entry
-    if time.time() - ts > _EXPLORE_TTL_SEC:
-        _store.pop(key, None)
-        return None
-    return data
+    data = cache.get(key)
+    return data if isinstance(data, dict) else None
 
 
-def set_cached_explore(key: str, data: dict[str, Any]) -> None:
-    _store[key] = (time.time(), data)
+def set_cached_explore(key: str, data: dict[str, Any], *, cursor: Optional[str] = None) -> None:
+    ttl = _EXPLORE_TTL_PAGE1 if not cursor else _EXPLORE_TTL_PAGE_N
+    cache.set(key, data, timeout=ttl)
 
 
 def invalidate_explore_cache() -> None:
-    keys = [k for k in _store if k.startswith("explore:")]
-    for k in keys:
-        _store.pop(k, None)
+    cache.set(_CACHE_VERSION_KEY, int(time.time()), timeout=None)

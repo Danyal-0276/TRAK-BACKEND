@@ -80,8 +80,7 @@ def article_browse_slugs(doc: dict) -> set[str]:
         if has_scores:
             if float(scores.get(slug, 0) or 0) >= secondary_min:
                 slugs.add(slug)
-        else:
-            slugs.add(slug)
+        # Without per-label scores, only trust the primary to avoid stale multi-label overflow.
     return slugs
 
 

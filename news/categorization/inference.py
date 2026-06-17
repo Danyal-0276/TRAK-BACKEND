@@ -8,7 +8,7 @@ from typing import Any, Optional
 
 from django.conf import settings
 
-from news.categorization.labels import category_slug, zero_shot_candidate_labels
+from news.categorization.labels import category_slug, main_category_slugs, zero_shot_candidate_labels
 
 logger = logging.getLogger(__name__)
 
@@ -69,11 +69,20 @@ def _hypothesis_template() -> str:
     ).strip()
 
 
-def _max_input_chars() -> int:
+def _secondary_relative_min() -> float:
     try:
-        return max(256, int(getattr(settings, "CATEGORY_MAX_INPUT_CHARS", 1500)))
+        return max(0.5, min(0.95, float(getattr(settings, "CATEGORY_SECONDARY_RELATIVE_MIN", 0.72))))
     except (TypeError, ValueError):
-        return 1500
+        return 0.72
+
+
+def _secondary_threshold(primary_score: float) -> float:
+    """Secondary labels must clear both the floor and a fraction of the primary score."""
+    return max(_secondary_min_confidence(), primary_score * _secondary_relative_min())
+
+
+def _valid_main_slugs() -> frozenset[str]:
+    return main_category_slugs()
 
 
 def _get_classifier():
@@ -181,41 +190,34 @@ def predict_categories(
             scored.append((slug, val))
 
     scored.sort(key=lambda x: x[1], reverse=True)
-    categories = [slug for slug, _ in scored[:max_labels]]
+    valid_slugs = _valid_main_slugs()
 
-    if not categories and labels_out and scores_out:
+    if not scored and labels_out and scores_out:
         slug = label_to_slug.get(str(labels_out[0])) or category_slug(str(labels_out[0]))
-        if slug:
-            categories = [slug]
-            score_map.setdefault(slug, float(scores_out[0]))
+        top_score = float(scores_out[0]) if scores_out else 0.0
+        if slug and slug in valid_slugs and top_score >= _primary_min_confidence():
+            scored = [(slug, top_score)]
+            score_map[slug] = top_score
 
-    primary = categories[0] if categories else ""
-    confidence = score_map.get(primary, 0.0) if primary else 0.0
-
-    min_primary = _primary_min_confidence()
-    if primary and confidence < min_primary:
-        primary = ""
-        categories = []
-        confidence = 0.0
+    if not scored:
         return empty
 
-    secondary_min = _secondary_min_confidence()
-    final_categories: list[str] = []
-    if primary:
-        final_categories.append(primary)
-    for slug, val in scored:
-        if slug == primary:
+    primary_slug, primary_score = scored[0]
+    if primary_score < _primary_min_confidence():
+        return empty
+
+    secondary_cutoff = _secondary_threshold(primary_score)
+    final_categories: list[str] = [primary_slug]
+    for slug, val in scored[1:]:
+        if slug not in valid_slugs or slug == primary_slug:
             continue
-        if val >= secondary_min:
+        if val >= secondary_cutoff and len(final_categories) < max_labels:
             final_categories.append(slug)
-        if len(final_categories) >= max_labels:
-            break
-    categories = final_categories
 
     return {
-        "primary_category": primary,
-        "categories": categories,
+        "primary_category": primary_slug,
+        "categories": final_categories,
         "category_scores": score_map,
-        "category_confidence": confidence,
+        "category_confidence": primary_score,
         "category_model_id": category_model_id(),
     }

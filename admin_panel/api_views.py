@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from datetime import datetime, timezone
 from io import StringIO
 from pathlib import Path
@@ -225,6 +226,23 @@ class AdminArticlesView(APIView):
         return None
 
     @staticmethod
+    def _text_search_query(q: str) -> dict | None:
+        term = str(q or "").strip()
+        if len(term) < 2:
+            return None
+        escaped = re.escape(term)
+        rx = {"$regex": escaped, "$options": "i"}
+        return {
+            "$or": [
+                {"title": rx},
+                {"summary": rx},
+                {"source_key": rx},
+                {"topic_keywords": rx},
+                {"canonical_url": rx},
+            ]
+        }
+
+    @staticmethod
     def _merge_queries(*parts: dict | None) -> dict:
         queries = [q for q in parts if q]
         if not queries:
@@ -258,6 +276,7 @@ class AdminArticlesView(APIView):
             or ""
         )
         credibility_label = request.query_params.get("credibility_label") or ""
+        search_q = (request.query_params.get("q") or request.query_params.get("search") or "").strip()
         needs_review_filter = self._is_needs_review_filter(moderation_status)
         if needs_review_filter or self._credibility_label_query(credibility_label):
             scope = "processed"
@@ -272,6 +291,7 @@ class AdminArticlesView(APIView):
                 self._pipeline_query(pipeline_status),
                 self._moderation_query(moderation_status),
                 self._credibility_label_query(credibility_label),
+                self._text_search_query(search_q),
             )
             ps_lower = str(pipeline_status or "").strip().lower()
             sort_dir = 1 if ps_lower in {"queue", "pending", "processing"} else -1
@@ -282,28 +302,42 @@ class AdminArticlesView(APIView):
             query = self._merge_queries(
                 self._moderation_query(moderation_status),
                 self._credibility_label_query(credibility_label),
+                self._text_search_query(search_q),
             )
             proc_docs = list(
                 proc_col.find(query).sort("processed_at", -1).skip(skip).limit(page_size)
             )
             results.extend(self._serialize_processed_list(proc_docs, raw_col))
         else:
-            half = max(1, page_size // 2)
             raw_query = self._merge_queries(
                 self._pipeline_query(pipeline_status),
                 self._moderation_query(moderation_status),
                 self._credibility_label_query(credibility_label),
+                self._text_search_query(search_q),
             )
             proc_query = self._merge_queries(
                 self._moderation_query(moderation_status),
                 self._credibility_label_query(credibility_label),
+                self._text_search_query(search_q),
             )
-            for doc in raw_col.find(raw_query).sort("fetched_at", -1).limit(half):
-                results.append(_serialize_raw(doc))
-            proc_docs = list(
-                proc_col.find(proc_query).sort("processed_at", -1).limit(page_size - half)
-            )
-            results.extend(self._serialize_processed_list(proc_docs, raw_col))
+            raw_total = raw_col.count_documents(raw_query)
+            remaining = page_size
+            if skip < raw_total:
+                raw_docs = list(
+                    raw_col.find(raw_query).sort("fetched_at", -1).skip(skip).limit(remaining)
+                )
+                for doc in raw_docs:
+                    results.append(_serialize_raw(doc))
+                remaining -= len(raw_docs)
+            proc_skip = max(0, skip - raw_total)
+            if remaining > 0:
+                proc_docs = list(
+                    proc_col.find(proc_query)
+                    .sort("processed_at", -1)
+                    .skip(proc_skip)
+                    .limit(remaining)
+                )
+                results.extend(self._serialize_processed_list(proc_docs, raw_col))
 
         review_query = needs_review_query()
         if scope == "raw":
@@ -326,11 +360,14 @@ class AdminArticlesView(APIView):
             ),
         )
         count_payload["returned"] = len(results)
+        has_more = (skip + len(results)) < filtered_total
 
         return Response({
             "page": page,
             "page_size": page_size,
             "scope": scope,
+            "q": search_q or None,
+            "has_more": has_more,
             "pipeline_status": str(pipeline_status or "").strip().lower() or None,
             "moderation_status": str(moderation_status or "").strip().lower() or None,
             "credibility_label": str(credibility_label or "").strip().lower() or None,

@@ -121,6 +121,17 @@ def ensure_all_article_indexes() -> None:
     proc.create_index([("primary_category", ASCENDING), ("processed_at", DESCENDING)])
     try:
         proc.create_index(
+            [
+                ("credibility_label", ASCENDING),
+                ("processed_at", DESCENDING),
+                ("_id", DESCENDING),
+            ],
+            name="feed_real_processed_at",
+        )
+    except Exception:
+        pass
+    try:
+        proc.create_index(
             [("title", TEXT), ("summary", TEXT), ("clean_text", TEXT)],
             name="processed_articles_text",
         )
@@ -151,5 +162,12 @@ def ensure_all_article_indexes() -> None:
 
     reactions = reactions_collection()
     reactions.create_index([("user_id", ASCENDING), ("article_id", ASCENDING)], unique=True)
+    try:
+        reactions.create_index(
+            [("article_id", ASCENDING), ("reaction", ASCENDING)],
+            name="reactions_article_reaction",
+        )
+    except Exception:
+        pass
 
     ensure_feedback_indexes()
