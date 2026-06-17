@@ -95,6 +95,19 @@ class Command(BaseCommand):
         )
 
     def handle(self, *args, **options):
+        from news.pipeline.auto_runner import (
+            release_pipeline_cycle_lock,
+            try_acquire_pipeline_cycle_lock,
+        )
+
+        cycle_lock = try_acquire_pipeline_cycle_lock()
+        try:
+            self._run_cycle(options)
+        finally:
+            if cycle_lock:
+                release_pipeline_cycle_lock()
+
+    def _run_cycle(self, options):
         if not options["skip_scrape"]:
             self.stdout.write(self.style.NOTICE("=== Scrape -> raw_articles (pending) ==="))
             scrape_kwargs = {
@@ -132,3 +145,4 @@ class Command(BaseCommand):
                 "Cycle finished. Feed uses processed_articles; clients call GET /api/user/feed/."
             )
         )
+
