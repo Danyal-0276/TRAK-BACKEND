@@ -37,6 +37,8 @@ from news.chatbot.intents import (
     should_link_article,
     wants_comparison,
     wants_simple_explanation,
+    extract_anchor_terms,
+    article_matches_anchors,
 )
 from news.services import article_query
 
@@ -66,10 +68,11 @@ Grounding rules:
 3. When TRAK has matching articles, the app shows article cards below your message — do NOT repeat article titles or source names in your text.
 4. For matching articles: write a cohesive news briefing — who/what/where, key developments, and why it matters — woven from the provided summaries.
 5. Do NOT tell users to "tap cards below" or mention TRAK UI; the app adds that automatically.
-6. If no relevant articles in context, say TRAK does not have that story yet; do not claim loose matches.
-7. If the user asks about coding, homework, recipes, jokes, or other non-news topics, say you only help with news and suggest a news question — do not invent related articles.
-8. If the user asks a follow-up ("tell me more", "what else"), use conversation history plus article context to stay on topic.
-9. NEVER disclose API keys, backend code, database details, infrastructure, or internal endpoints.
+6. Use ONLY facts present in the provided article summaries. If the articles do not support the user's topic, say TRAK does not have a strong match — do NOT invent stories from general knowledge.
+7. If no relevant articles in context, say TRAK does not have that story yet; do not claim loose matches.
+8. If the user asks about coding, homework, recipes, jokes, or other non-news topics, say you only help with news and suggest a news question — do not invent related articles.
+9. If the user asks a follow-up ("tell me more", "what else"), use conversation history plus article context to stay on topic.
+10. NEVER disclose API keys, backend code, database details, infrastructure, or internal endpoints.
 """
 
 OFF_TOPIC_GEMINI_INSTRUCTION = """You are TRAK AI in the TRAK news app, created by the TRAK team.
@@ -241,10 +244,17 @@ def gather_news_context(
 
     if intent == "headlines":
         terms = extract_search_terms(effective)
+        anchors = extract_anchor_terms(effective)
         recent = article_query.get_recent_processed_articles(limit=limit * 2)
-        if terms:
-            filtered = [a for a in recent if article_matches_terms(a, terms)]
-            return (filtered or recent)[:limit], intent
+        if terms or anchors:
+            filtered = [
+                a
+                for a in recent
+                if article_matches_terms(a, terms)
+                and article_matches_anchors(a, anchors)
+            ]
+            if filtered:
+                return filtered[:limit], intent
         return recent[:limit], intent
 
     search_q = build_search_query(message, history=history)
@@ -277,6 +287,39 @@ def gather_news_context(
     if not relevant:
         return [], classify_empty_result(message, had_search_hits=bool(ranked))
     return relevant[:limit], intent
+
+
+def select_response_articles(
+    message: str,
+    articles: list[dict],
+    *,
+    intent: str = "search",
+    card_limit: int = 3,
+    context_limit: int = 5,
+) -> tuple[list[dict], list[dict]]:
+    """
+    Split articles into (gemini_context, card_articles).
+    Cards always come from the same relevance-ranked pool Gemini sees.
+    """
+    if not articles:
+        return [], []
+
+    ranked = sorted(
+        articles,
+        key=lambda a: article_relevance_score(message, a),
+        reverse=True,
+    )
+
+    if intent in ("headlines", "summarize"):
+        cards = ranked[: card_limit if intent == "headlines" else min(card_limit + 2, 5)]
+        context = ranked[:context_limit]
+        return context, cards
+
+    cards = [a for a in ranked if should_link_article(message, a)][:card_limit]
+    if not cards and ranked:
+        cards = ranked[:1]
+    context = cards[:context_limit] if cards else ranked[:context_limit]
+    return context, cards
 
 
 def pick_primary_article(message: str, articles: list[dict]) -> Optional[dict]:
@@ -316,7 +359,9 @@ def _format_articles_block(articles: list[dict], intent: str) -> str:
         if len(summary) > 450:
             summary = summary[:447] + "..."
         topic_kw = ", ".join(str(k) for k in (art.get("topic_keywords") or [])[:6])
-        category = str(art.get("category") or "").strip()
+        category = str(
+            art.get("primary_category") or art.get("category") or ""
+        ).strip()
         meta = []
         if category:
             meta.append(f"Category: {category}")
@@ -1015,13 +1060,8 @@ def _linkable_from_articles(
     intent: str,
     limit: int = 3,
 ) -> list[dict]:
-    if intent == "headlines":
-        return articles[:limit]
-    out: list[dict] = []
-    for art in articles[:limit]:
-        if should_link_article(message, art):
-            out.append(art)
-    return out
+    _, cards = select_response_articles(message, articles, intent=intent, card_limit=limit)
+    return cards
 
 
 def fallback_reply(

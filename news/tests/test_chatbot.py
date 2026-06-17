@@ -7,6 +7,7 @@ from news.chatbot.intents import (
     detect_intent,
     expand_search_terms,
     extract_search_terms,
+    filter_relevant_articles,
     get_greeting_reply,
     has_news_intent,
     is_follow_up_message,
@@ -25,6 +26,7 @@ from news.chatbot.gemini_chat import (
     format_related_articles_intro,
     pick_primary_article,
     sanitize_bot_reply,
+    select_response_articles,
 )
 
 
@@ -194,6 +196,55 @@ class ChatbotIntentTests(SimpleTestCase):
         art = {"title": "Pakistan economy grows amid reforms", "summary": "Islamabad..."}
         self.assertTrue(should_link_article("Pakistan economy news", art))
         self.assertFalse(should_link_article("weather in mars", art))
+
+    def test_sports_query_excludes_politics(self):
+        articles = [
+            {
+                "id": "1",
+                "title": "Maryam Nawaz urges unity, tolerance on start of new Islamic year",
+                "summary": "Pakistan political leaders called for unity.",
+                "primary_category": "politics",
+            },
+            {
+                "id": "2",
+                "title": "China pledges new humanitarian aid packages for Lebanon and Iran",
+                "summary": "Beijing announced aid for the region.",
+                "primary_category": "world-news",
+            },
+            {
+                "id": "3",
+                "title": "PCB unveils new central contract framework for players",
+                "summary": "The Pakistan Cricket Board announced Track AB through Track D categories.",
+                "primary_category": "sports",
+            },
+        ]
+        filtered = filter_relevant_articles("Pakistan sports news", articles)
+        ids = [a["id"] for a in filtered]
+        self.assertIn("3", ids)
+        self.assertNotIn("1", ids)
+        self.assertNotIn("2", ids)
+
+    def test_select_response_articles_aligns_cards(self):
+        articles = [
+            {
+                "id": "1",
+                "title": "Maryam Nawaz urges unity",
+                "summary": "Pakistan politics update.",
+                "primary_category": "politics",
+            },
+            {
+                "id": "2",
+                "title": "PCB unveils new central contract framework",
+                "summary": "Pakistan Cricket Board expands player contract tracks.",
+                "primary_category": "sports",
+            },
+        ]
+        context, cards = select_response_articles("sports in Pakistan", articles, intent="search")
+        card_ids = [a["id"] for a in cards]
+        context_ids = [a["id"] for a in context]
+        self.assertEqual(card_ids, ["2"])
+        self.assertIn("2", context_ids)
+        self.assertNotIn("1", card_ids)
 
     def test_pick_primary(self):
         articles = [

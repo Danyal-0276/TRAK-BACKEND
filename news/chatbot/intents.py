@@ -146,6 +146,34 @@ IDENTITY_PATTERN = re.compile(
 )
 
 LINK_SCORE_THRESHOLD = 1.5
+STRICT_LINK_SCORE_THRESHOLD = 2.5
+
+# Subject-specific terms: when present, linked articles must match these (not just "pakistan", etc.).
+TOPIC_ANCHOR_TERMS = frozenset(
+    """
+    sports sport cricket football soccer tennis basketball hockey rugby golf boxing mma
+    pcb bcci ipl psl nfl nba mlb f1 formula athletics olympics
+    tech technology ai software startup silicon chip smartphone cyber
+    business economy economic markets stocks finance banking inflation earnings ipo
+    politics election government minister parliament senate congress vote referendum
+    health medical hospital vaccine disease pandemic who
+    science space climate environment energy nuclear
+    entertainment movie film music celebrity hollywood bollywood
+    war conflict military defense sanctions nato
+    """.split()
+)
+
+ANCHOR_CATEGORY_ALIASES: dict[str, tuple[str, ...]] = {
+    "sports": ("sports", "cricket", "football", "soccer", "tennis", "basketball", "hockey", "athlete"),
+    "sport": ("sports", "cricket", "football", "soccer", "tennis", "basketball", "hockey", "athlete"),
+    "cricket": ("cricket", "sports", "pcb", "bcci", "ipl", "psl"),
+    "pcb": ("cricket", "sports", "pcb"),
+    "tech": ("technology", "tech", "software", "ai", "startup"),
+    "technology": ("technology", "tech", "software", "ai", "startup"),
+    "politics": ("politics", "election", "government", "minister", "parliament"),
+    "business": ("business", "economy", "markets", "finance", "stocks"),
+    "economy": ("business", "economy", "markets", "finance", "stocks"),
+}
 
 CHITCHAT_PATTERN = re.compile(
     r"(?i)^("
@@ -498,23 +526,71 @@ def detect_intent(message: str, *, history: list[dict] | None = None) -> str:
     return "search"
 
 
+def extract_anchor_terms(message: str) -> list[str]:
+    """Topic-specific terms that must appear in linked articles when present."""
+    return [t for t in extract_search_terms(message) if t in TOPIC_ANCHOR_TERMS]
+
+
+def article_haystack(article: dict) -> str:
+    title = str(article.get("title") or "").lower()
+    summary = str(article.get("summary") or article.get("excerpt") or "").lower()
+    topic_kw = " ".join(str(k) for k in (article.get("topic_keywords") or [])).lower()
+    category = str(
+        article.get("primary_category") or article.get("category") or ""
+    ).lower().replace("-", " ")
+    return f"{title} {summary} {topic_kw} {category}"
+
+
+def article_matches_anchors(article: dict, anchors: list[str]) -> bool:
+    if not anchors:
+        return True
+    hay = article_haystack(article)
+    for anchor in anchors:
+        if anchor in hay:
+            return True
+        for alias in ANCHOR_CATEGORY_ALIASES.get(anchor, ()):
+            if alias in hay:
+                return True
+    return False
+
+
 def filter_relevant_articles(message: str, articles: list[dict]) -> list[dict]:
     """Keep articles that match the user's question."""
     terms = extract_search_terms(message)
+    anchors = extract_anchor_terms(message)
+    threshold = STRICT_LINK_SCORE_THRESHOLD if anchors else LINK_SCORE_THRESHOLD
+
     matched = [
         art
         for art in articles
-        if article_relevance_score(message, art) >= LINK_SCORE_THRESHOLD
+        if article_relevance_score(message, art) >= threshold
+        and article_matches_anchors(art, anchors)
     ]
     if matched and len(terms) >= 2:
-        all_terms = [a for a in matched if article_matches_terms(a, terms, match="all")]
+        all_terms = [
+            a
+            for a in matched
+            if article_matches_terms(a, terms, match="all")
+            and article_matches_anchors(a, anchors)
+        ]
         if all_terms:
             return all_terms
     if matched:
         return matched
-    # DB search returned rows but strict score failed — keep best only for clear news queries
+
+    if anchors:
+        anchor_only = [
+            art
+            for art in articles
+            if article_matches_anchors(art, anchors)
+            and article_relevance_score(message, art) >= LINK_SCORE_THRESHOLD
+        ]
+        if anchor_only:
+            return anchor_only[:3]
+
     if (
         articles
+        and not anchors
         and has_news_intent(message)
         and not is_off_topic_message(message)
         and article_relevance_score(message, articles[0]) >= LINK_SCORE_THRESHOLD
@@ -567,11 +643,8 @@ def article_relevance_score(message: str, article: dict) -> float:
     if not article:
         return 0.0
     q = normalize_user_message(message).lower()
+    hay = article_haystack(article)
     title = str(article.get("title") or "").lower()
-    summary = str(article.get("summary") or article.get("excerpt") or "").lower()
-    topic_kw = " ".join(str(k) for k in (article.get("topic_keywords") or [])).lower()
-    category = str(article.get("category") or "").lower()
-    hay = f"{title} {summary} {topic_kw} {category}"
     score = 0.0
     if q and q in title:
         score += 10.0
@@ -584,6 +657,7 @@ def article_relevance_score(message: str, article: dict) -> float:
         elif pl in hay:
             score += 3.0
     terms = extract_search_terms(message)
+    anchors = extract_anchor_terms(message)
     hits = 0
     title_hits = 0
     for term in terms:
@@ -594,6 +668,13 @@ def article_relevance_score(message: str, article: dict) -> float:
         elif term in hay:
             score += 1.5
             hits += 1
+    for anchor in anchors:
+        if anchor in title:
+            score += 5.0
+        elif anchor in hay or any(alias in hay for alias in ANCHOR_CATEGORY_ALIASES.get(anchor, ())):
+            score += 3.0
+        else:
+            score -= 2.0
     if len(terms) >= 2 and hits == len(terms):
         score += 2.5
     if title_hits >= 2:
@@ -604,16 +685,19 @@ def article_relevance_score(message: str, article: dict) -> float:
 
 
 def should_link_article(message: str, article: dict | None) -> bool:
-    return article_relevance_score(message, article) >= LINK_SCORE_THRESHOLD
+    if not article:
+        return False
+    anchors = extract_anchor_terms(message)
+    threshold = STRICT_LINK_SCORE_THRESHOLD if anchors else LINK_SCORE_THRESHOLD
+    if article_relevance_score(message, article) < threshold:
+        return False
+    return article_matches_anchors(article, anchors)
 
 
 def article_matches_terms(article: dict, terms: list[str], *, match: str = "any") -> bool:
     if not terms:
         return True
-    title = str(article.get("title") or "").lower()
-    summary = str(article.get("summary") or "").lower()
-    topic_kw = " ".join(str(k) for k in (article.get("topic_keywords") or [])).lower()
-    hay = f"{title} {summary} {topic_kw}"
+    hay = article_haystack(article)
     if match == "all":
         return all(t in hay for t in terms)
     return any(t in hay for t in terms)

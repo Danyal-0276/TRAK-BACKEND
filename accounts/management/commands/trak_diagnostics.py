@@ -52,7 +52,44 @@ class Command(BaseCommand):
         except Exception as e:
             self.stdout.write(self.style.ERROR(f"MongoDB error: {e}"))
 
-        self.stdout.write("\n=== ADMIN_EMAILS (registration → admin role) ===")
+        self.stdout.write("\n=== ADMIN_EMAILS (registration -> admin role) ===")
         self.stdout.write(getattr(settings, "ADMIN_EMAILS", "") or "(empty)")
+
+        self.stdout.write("\n=== Firebase Cloud Messaging (push) ===")
+        try:
+            from notifications.fcm import _ensure_app, _is_deliverable_fcm_token
+            from news.mongo_db import device_tokens_collection
+
+            app = _ensure_app()
+            if app is None:
+                self.stdout.write(
+                    self.style.WARNING(
+                        "FCM disabled — set GOOGLE_APPLICATION_CREDENTIALS or FIREBASE_CREDENTIALS_JSON."
+                    )
+                )
+            else:
+                self.stdout.write(self.style.SUCCESS("FCM credentials: OK (firebase_admin initialized)"))
+
+            coll = device_tokens_collection()
+            total_tokens = coll.estimated_document_count()
+            deliverable = 0
+            placeholders = 0
+            by_platform: dict[str, int] = {}
+            for doc in coll.find({}, {"token": 1, "platform": 1}):
+                token = str(doc.get("token") or "")
+                platform = str(doc.get("platform") or "unknown")
+                by_platform[platform] = by_platform.get(platform, 0) + 1
+                if _is_deliverable_fcm_token(token):
+                    deliverable += 1
+                elif token.startswith("trak-web-") or token.startswith("trak-mobile-"):
+                    placeholders += 1
+            self.stdout.write(f"Device tokens stored: {total_tokens}")
+            self.stdout.write(f"Deliverable FCM tokens: {deliverable}")
+            self.stdout.write(f"Placeholder tokens (ignored for push): {placeholders}")
+            if by_platform:
+                parts = ", ".join(f"{k}: {v}" for k, v in sorted(by_platform.items()))
+                self.stdout.write(f"By platform: {parts}")
+        except Exception as e:
+            self.stdout.write(self.style.ERROR(f"FCM diagnostics error: {e}"))
 
         self.stdout.write(self.style.SUCCESS("\nDiagnostics finished."))

@@ -24,6 +24,7 @@ from news.chatbot.gemini_chat import (
     is_chatbot_configured,
     pick_primary_article,
     sanitize_bot_reply,
+    select_response_articles,
     serialize_chat_article,
 )
 
@@ -51,5 +52,6 @@ __all__ = [
     "is_chatbot_configured",
     "pick_primary_article",
     "sanitize_bot_reply",
+    "select_response_articles",
     "serialize_chat_article",
 ]

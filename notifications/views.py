@@ -16,6 +16,7 @@ from notifications.user_scope import (
     user_id_variants,
     user_notifications_query,
 )
+from notifications.fcm import _is_deliverable_fcm_token
 
 
 def _utc_now() -> datetime:
@@ -200,6 +201,21 @@ class DeviceTokenRegisterView(APIView):
         platform = str(request.data.get("platform") or "").strip().lower() or "unknown"
         if not token:
             return Response({"detail": "token is required."}, status=status.HTTP_400_BAD_REQUEST)
+        if platform == "mobile" and not _is_deliverable_fcm_token(token):
+            return Response(
+                {
+                    "detail": (
+                        "Only real mobile FCM tokens can be registered. "
+                        "Rebuild the native app with Firebase messaging enabled."
+                    )
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if platform == "web" and not _is_deliverable_fcm_token(token):
+            return Response(
+                {"detail": "Web push is not configured yet; FCM token required."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
         device_tokens_collection().update_one(
             {"user_id": request.user.pk, "token": token},
             {"$set": {"platform": platform, "updated_at": _utc_now()}, "$setOnInsert": {"created_at": _utc_now()}},
