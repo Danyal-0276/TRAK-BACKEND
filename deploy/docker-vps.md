@@ -6,11 +6,14 @@ Web stays on **Vercel**. Mobile is separate. This guide is **Django API only** (
 
 | Piece | Where |
 |-------|--------|
-| API container | VPS (`docker compose`) |
+| `trak-api` container | VPS — Daphne API 24/7 (`docker compose up -d`) |
+| `pipeline` container | VPS — one-shot scrape + AI pipeline (cron, **not** always running) |
 | `.env` + Firebase JSON | **On the server only** — never in git |
 | MongoDB | Atlas (`MONGODB_URI` in server `.env`) |
-| Web | Vercel (`VITE_API_URL` → your VPS or domain) |
+| Web | Vercel (`vercel.json` → VPS `:8000`) |
 | CI/CD | GitHub Actions → GHCR → SSH deploy |
+
+**Your VPS app directory:** `/home/shahroz/trak` (`cd ~/trak`).
 
 Workflow file: `.github/workflows/ci-cd-vps.yml` at the **repository root** (`TRAK_Backend/` — same folder as `Dockerfile` and `docker-compose.yml`). Commit and push to GitHub.
 
@@ -67,6 +70,9 @@ Production tweaks in `.env`:
 DJANGO_DEBUG=False
 # Required until nginx/SSL on the VPS — otherwise HTTP 301 → https://ip:8000 and Vercel/mobile break.
 DJANGO_SECURE_SSL_REDIRECT=False
+# Keep heavy scrape/pipeline OUT of the API container (prevents OOM / random restarts).
+PIPELINE_AUTO_ENABLED=false
+SCRAPE_SCHEDULE_ENABLED=false
 DJANGO_ALLOWED_HOSTS=your-domain.com,your-vps-ip,.your-domain.com
 CORS_ALLOWED_ORIGINS=https://trak-flax.vercel.app
 CSRF_TRUSTED_ORIGINS=https://your-domain.com,https://trak-flax.vercel.app
@@ -157,9 +163,58 @@ VITE_API_URL=https://api.yourdomain.com
 
 ---
 
-## 7. Pipeline cron on VPS
+## 7. Daily scrape + pipeline (separate container + cron)
 
-Do **not** run heavy `run_news_cycle` inside the API container. Use systemd timer (see `vps-systemd.md`) or a separate cron container later.
+The API container must **not** run scrape/pipeline in the background (`PIPELINE_AUTO_ENABLED=false`, `SCRAPE_SCHEDULE_ENABLED=false` in `.env`).
+
+Instead, use the **`pipeline` compose service** — same Docker image as `api`, but runs once and exits:
+
+```bash
+cd ~/trak
+docker compose --profile pipeline run --rm pipeline
+```
+
+Or the helper script (after `git pull`):
+
+```bash
+chmod +x ~/trak/deploy/run-pipeline.sh
+~/trak/deploy/run-pipeline.sh
+```
+
+Check last run:
+
+```bash
+docker compose exec api python manage.py check_scrape_status
+```
+
+### One-time: enable daily cron on the VPS
+
+```bash
+ssh shahroz@167.86.110.151
+mkdir -p ~/trak/logs
+chmod +x ~/trak/deploy/run-pipeline.sh
+crontab -e
+```
+
+Add this line (runs every day at **02:00** server time):
+
+```cron
+0 2 * * * /home/shahroz/trak/deploy/run-pipeline.sh >> /home/shahroz/trak/logs/pipeline.log 2>&1
+```
+
+Verify cron is registered:
+
+```bash
+crontab -l
+```
+
+Tail logs after a run:
+
+```bash
+tail -f ~/trak/logs/pipeline.log
+```
+
+Alternative without cron: systemd timer + bare Python venv — see `vps-systemd.md` (non-Docker path).
 
 ---
 

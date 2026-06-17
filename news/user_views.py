@@ -661,7 +661,7 @@ class ChatbotView(APIView):
             "intent": intent,
             "powered_by": "gemini" if is_chatbot_configured() else "local",
         }
-        return _respond(payload, primary=primary_payload, related=serialized)
+        return _respond(payload, primary=primary_payload, related=linkable)
 
 
 def _append_chatbot_history(
