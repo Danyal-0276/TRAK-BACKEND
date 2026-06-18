@@ -126,7 +126,7 @@ def create_notification(
     if channels["in_app"]:
         fanout_notification(user_id, payload, audience=audience, send_push=channels["push"])
 
-    if channels["email"]:
+    if channels["email"] and ntype != "keyword_match":
         user = _user_by_id(user_id)
         if user and user.email:
             try:
