@@ -40,10 +40,10 @@ def _channels_for_user(user_id: Any, *, audience: str, ntype: str) -> dict[str, 
     if ntype == "keyword_match":
         if row.get("keyword_alerts") is False:
             return {"push": False, "email": False, "in_app": True}
-        # Keyword matches: in-app + push; email only when KEYWORD_MATCH_EMAIL_ENABLED=true in .env.
+        # Keyword alerts: in-app (WebSocket) + FCM on mobile only — never email.
         return {
             "push": push is not False,
-            "email": bool(getattr(settings, "KEYWORD_MATCH_EMAIL_ENABLED", False)),
+            "email": False,
             "in_app": True,
         }
     return {

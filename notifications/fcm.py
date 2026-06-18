@@ -115,6 +115,9 @@ def send_fcm_to_user(user_id: Any, title: str, body: str, data: dict | None = No
         coll = device_tokens_collection()
         tokens: list[str] = []
         for doc in coll.find({"user_id": {"$in": uids}}):
+            platform = str(doc.get("platform") or "").strip().lower()
+            if platform != "mobile":
+                continue
             t = doc.get("token")
             if t and isinstance(t, str):
                 cleaned = t.strip()
