@@ -75,8 +75,8 @@ class FcmSendTests(TestCase):
         coll = MagicMock()
         mock_coll_fn.return_value = coll
         coll.find.return_value = [
-            {"token": "trak-mobile-placeholder-not-real"},
-            {"token": REAL_FCM_TOKEN},
+            {"token": "trak-mobile-placeholder-not-real", "platform": "mobile"},
+            {"token": REAL_FCM_TOKEN, "platform": "mobile"},
         ]
         mock_result = MagicMock()
         mock_result.responses = [MagicMock(success=True, exception=None)]
@@ -88,6 +88,56 @@ class FcmSendTests(TestCase):
         self.assertEqual(stats["success"], 1)
         sent_tokens = mock_send_fn.call_args.args[0].tokens
         self.assertEqual(sent_tokens, [REAL_FCM_TOKEN])
+
+    @patch("notifications.fcm._ensure_app")
+    @patch("news.mongo_db.device_tokens_collection")
+    @patch("firebase_admin.messaging.send_each_for_multicast")
+    def test_skips_non_mobile_platform_tokens(self, mock_send_fn, mock_coll_fn, mock_ensure):
+        mock_ensure.return_value = object()
+        coll = MagicMock()
+        mock_coll_fn.return_value = coll
+        coll.find.return_value = [
+            {"token": REAL_FCM_TOKEN, "platform": "web"},
+            {"token": REAL_FCM_TOKEN, "platform": "unknown"},
+        ]
+
+        stats = send_fcm_to_user(42, "Hello", "World")
+
+        self.assertEqual(stats, {"attempted": 0, "success": 0, "failure": 0})
+        mock_send_fn.assert_not_called()
+
+
+class NotificationChannelTests(TestCase):
+    @patch("notifications.delivery.user_preferences_collection")
+    def test_keyword_match_never_emails(self, mock_prefs_fn):
+        from notifications.delivery import _channels_for_user
+
+        coll = MagicMock()
+        mock_prefs_fn.return_value = coll
+        coll.find_one.return_value = {
+            "email_enabled": True,
+            "push_enabled": True,
+            "keyword_alerts": True,
+        }
+        channels = _channels_for_user(1, audience="user", ntype="keyword_match")
+        self.assertFalse(channels["email"])
+        self.assertTrue(channels["in_app"])
+        self.assertTrue(channels["push"])
+
+    @patch("notifications.delivery.user_preferences_collection")
+    def test_non_keyword_user_alerts_respect_email_pref(self, mock_prefs_fn):
+        from notifications.delivery import _channels_for_user
+
+        coll = MagicMock()
+        mock_prefs_fn.return_value = coll
+        coll.find_one.return_value = {"email_enabled": True, "push_enabled": True}
+        channels = _channels_for_user(1, audience="user", ntype="welcome_back")
+        self.assertTrue(channels["email"])
+        self.assertTrue(channels["in_app"])
+
+        coll.find_one.return_value = {"email_enabled": False, "push_enabled": True}
+        channels = _channels_for_user(1, audience="user", ntype="welcome_back")
+        self.assertFalse(channels["email"])
 
 
 @override_settings(DEBUG=True, SECURE_SSL_REDIRECT=False)

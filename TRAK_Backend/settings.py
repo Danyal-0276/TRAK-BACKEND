@@ -696,13 +696,6 @@ TTS_EDGE_RATE = os.environ.get("TTS_EDGE_RATE", "+12%").strip()
 FIREBASE_CREDENTIALS_JSON = os.environ.get("FIREBASE_CREDENTIALS_JSON", "").strip()
 GOOGLE_APPLICATION_CREDENTIALS = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS", "").strip()
 
-# Keyword-match article alerts only (password reset / OTP use accounts.email_transport — unaffected).
-KEYWORD_MATCH_EMAIL_ENABLED = os.environ.get("KEYWORD_MATCH_EMAIL_ENABLED", "false").lower() in (
-    "1",
-    "true",
-    "yes",
-)
-
 # --- Auth / ops (not secrets; tune per environment) ---
 EMAIL_WORKER_THREADS = max(1, int(os.environ.get("EMAIL_WORKER_THREADS", "4")))
 OTP_DEV_PREVIEW = os.environ.get("OTP_DEV_PREVIEW", "").lower() in ("1", "true", "yes")
