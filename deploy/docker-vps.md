@@ -212,17 +212,29 @@ chmod +x ~/trak/deploy/run-pipeline.sh
 crontab -e
 ```
 
-Add this line (runs every day at **02:00** server time):
+Add this line (runs every day at **02:00** server time — check with `date`):
 
 ```cron
-0 2 * * * /home/shahroz/trak/deploy/run-pipeline.sh >> /home/shahroz/trak/logs/pipeline.log 2>&1
+0 2 * * * /home/shahroz/trak/deploy/run-pipeline.sh
 ```
+
+The script appends to `~/trak/logs/pipeline.log` automatically (no `>>` redirect needed).
 
 Verify cron is registered:
 
 ```bash
 crontab -l
+chmod +x ~/trak/deploy/run-pipeline.sh
 ```
+
+After 2 AM, confirm cron actually fired:
+
+```bash
+grep run-pipeline /var/log/syslog | tail -5
+tail -30 ~/trak/logs/pipeline.log
+```
+
+If syslog shows `Permission denied`, run `chmod +x ~/trak/deploy/run-pipeline.sh` again after each `git pull` (or add `chmod +x` to your deploy script).
 
 Tail logs after a run:
 

@@ -58,15 +58,22 @@ services:
       SCRAPE_SCHEDULE_ENABLED: "false"
     entrypoint: ["python", "manage.py"]
     # Full daily cycle: scrape + pipeline (separate container — keeps heavy ML off trak-api).
+    # ~5 new articles per source module (skips/dedupes are OK); all 7 sources run every cycle.
     command:
       - run_news_cycle
-      - --total-limit
-      - "150"
+      - --sources
+      - currents
+      - newsdata
+      - gnews
+      - rss
+      - generic_sites
+      - dunya
+      - dawn
       - --scrape-limit
-      - "40"
-      - --no-pipeline-all
-      - --pipeline-limit
-      - "150"
+      - "${SCRAPE_PER_SOURCE_LIMIT:-5}"
+      - --pipeline-all
+      - --workers
+      - "${PIPELINE_WORKERS:-3}"
       - --requeue-stale
     restart: "no"
 
