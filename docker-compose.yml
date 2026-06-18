@@ -71,7 +71,6 @@ services:
       - dawn
       - --scrape-limit
       - "${SCRAPE_PER_SOURCE_LIMIT:-5}"
-      - --pipeline-all
       - --workers
       - "${PIPELINE_WORKERS:-3}"
       - --requeue-stale
