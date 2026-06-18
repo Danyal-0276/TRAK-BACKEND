@@ -1,5 +1,6 @@
 from django.test import SimpleTestCase, override_settings
 
+from news.categorization.inference import _classification_input
 from news.categorization.matching import (
     article_browse_slugs,
     article_matches_category,
@@ -8,6 +9,16 @@ from news.categorization.matching import (
 
 
 class CategoryMlMatchingTests(SimpleTestCase):
+    @override_settings(CATEGORY_CLASSIFIER_MAX_CHARS=500)
+    def test_classification_input_truncates_without_error(self):
+        text = _classification_input(
+            title="Headline",
+            summary="Summary line",
+            clean_text="body " * 800,
+        )
+        self.assertIsInstance(text, str)
+        self.assertLessEqual(len(text), 500)
+
     def test_ml_category_match_all_labels(self):
         doc = {
             "title": "Fed raises interest rates",

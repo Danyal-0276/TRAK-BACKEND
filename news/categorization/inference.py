@@ -69,6 +69,13 @@ def _hypothesis_template() -> str:
     ).strip()
 
 
+def _max_input_chars() -> int:
+    try:
+        return max(128, int(getattr(settings, "CATEGORY_CLASSIFIER_MAX_CHARS", 2000)))
+    except (TypeError, ValueError):
+        return 2000
+
+
 def _secondary_relative_min() -> float:
     try:
         return max(0.5, min(0.95, float(getattr(settings, "CATEGORY_SECONDARY_RELATIVE_MIN", 0.72))))
