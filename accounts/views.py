@@ -766,16 +766,31 @@ class RegisterView(RatelimitedAPIMixin, APIView):
             logger.exception("Mongo profile sync failed during registration for user_id=%s", user.pk)
 
         dev_code = None
+        email_sent = None
+        email_error = None
         if getattr(settings, "REGISTER_SEND_VERIFICATION_OTP", True):
             try:
-                _, dev_code = OtpService.issue(
+                purpose_label = OtpPurpose.LABELS.get(
+                    OtpPurpose.EMAIL_VERIFICATION, "email verification"
+                )
+                _, plain_code = OtpService.issue(
                     email=user.email,
                     purpose=OtpPurpose.EMAIL_VERIFICATION,
                     user=user,
-                    send_email=True,
+                    send_email=False,
                 )
+                email_sent, email_error = send_otp_email_sync(
+                    to_email=user.email,
+                    code=plain_code,
+                    purpose_label=purpose_label,
+                    expires_minutes=max(1, OtpService.expiry_seconds() // 60),
+                )
+                if settings.DEBUG and plain_code:
+                    dev_code = plain_code
             except Exception:
                 logger.exception("Failed to send registration verification OTP for %s", user.email)
+                email_sent = False
+                email_error = "send_failed"
 
         refresh = RefreshToken.for_user(user)
         payload = {
@@ -786,6 +801,10 @@ class RegisterView(RatelimitedAPIMixin, APIView):
             "is_new_user": True,
             "onboarding_complete": False,
         }
+        if email_sent is not None:
+            payload["email_sent"] = email_sent
+        if email_error:
+            payload["email_error"] = email_error
         if settings.DEBUG and dev_code:
             payload["dev_code"] = dev_code
         return Response(payload, status=status.HTTP_201_CREATED)

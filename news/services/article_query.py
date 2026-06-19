@@ -19,7 +19,7 @@ from news.category_matching import (
     user_follows_all_categories,
 )
 from news.categorization.labels import category_slug
-from news.categorization.matching import article_browse_slugs, article_primary_browse_slug, browse_primary_only_enabled
+from news.categorization.matching import article_primary_browse_slug
 from news.moderation_rules import article_visible_to_users, user_feed_visibility_clause
 from news.mongo_db import processed_collection, raw_collection, reactions_collection, user_keywords_collection
 from news.services.feed_cache import (
@@ -296,7 +296,7 @@ def _category_browse_query_clause(category: str) -> dict:
     return {"primary_category": cat_key}
 
 
-def get_primary_category_counts(*, force_refresh: bool = False) -> dict[str, int]:
+def get_primary_category_counts(*, force_refresh: bool = False, include_rule_fallback: bool = True) -> dict[str, int]:
     """Count visible processed articles per browse category (one slug per article, cached)."""
     if not force_refresh:
         cached = get_cached_category_counts()
@@ -304,29 +304,51 @@ def get_primary_category_counts(*, force_refresh: bool = False) -> dict[str, int
             return cached
 
     proc = processed_collection()
-    projection = {
-        "title": 1,
-        "summary": 1,
-        "clean_text": 1,
-        "normalized_text": 1,
-        "source_key": 1,
-        "topic_keywords": 1,
-        "normalized_terms": 1,
-        "entities": 1,
-        "primary_category": 1,
-        "categories": 1,
-        "category_scores": 1,
-        "credibility_label": 1,
-        "credibility_label_name": 1,
-        "moderation_status": 1,
-    }
+    visibility = user_feed_visibility_clause()
     out: dict[str, int] = {}
-    for doc in proc.find(user_feed_visibility_clause(), projection):
-        if not article_visible_to_users(doc):
-            continue
-        slug = article_primary_browse_slug(doc)
+
+    pipeline = [
+        {
+            "$match": {
+                **visibility,
+                "primary_category": {"$exists": True, "$nin": [None, ""]},
+            }
+        },
+        {"$group": {"_id": "$primary_category", "count": {"$sum": 1}}},
+    ]
+    for row in proc.aggregate(pipeline):
+        slug = category_slug(row.get("_id") or "")
         if slug:
-            out[slug] = out.get(slug, 0) + 1
+            out[slug] = out.get(slug, 0) + int(row.get("count") or 0)
+
+    from news.categorization.matching import _rule_fallback_enabled
+
+    if include_rule_fallback and _rule_fallback_enabled():
+        missing_projection = {
+            "title": 1,
+            "summary": 1,
+            "clean_text": 1,
+            "topic_keywords": 1,
+            "primary_category": 1,
+            "categories": 1,
+            "category_scores": 1,
+            "credibility_label": 1,
+            "moderation_status": 1,
+        }
+        missing_query = {
+            **visibility,
+            "$or": [
+                {"primary_category": {"$exists": False}},
+                {"primary_category": None},
+                {"primary_category": ""},
+            ],
+        }
+        for doc in proc.find(missing_query, missing_projection):
+            if not article_visible_to_users(doc):
+                continue
+            slug = article_primary_browse_slug(doc)
+            if slug:
+                out[slug] = out.get(slug, 0) + 1
 
     set_cached_category_counts(out)
     return out
@@ -761,8 +783,8 @@ def get_explore_feed_page(
     q = (search_q or "").strip().lower()
     cat = (category or "").strip()
     page_size = max(1, min(int(limit or 30), 200))
-    cacheable = not q and not cat
-    cache_key = explore_cache_key(limit=page_size, q=q, cursor=cursor)
+    cacheable = not q
+    cache_key = explore_cache_key(limit=page_size, q=q, cursor=cursor, category=cat)
     if cacheable:
         cached = get_cached_explore(cache_key)
         if cached is not None:
@@ -774,7 +796,9 @@ def get_explore_feed_page(
     cat_key = category_slug(cat) if cat else ""
     category_total = None
     if cat_key and not cursor:
-        category_total = get_primary_category_counts().get(cat_key, 0)
+        cached_counts = get_cached_category_counts()
+        if cached_counts is not None:
+            category_total = cached_counts.get(cat_key, 0)
     query = _merge_query(
         _query_after_cursor(cursor or ""),
         _search_filter_clause(q),
@@ -786,59 +810,74 @@ def get_explore_feed_page(
     last_seen_doc: Optional[dict] = None
     now = datetime.now(timezone.utc)
     last_batch_len = 0
-    list_projection = PROCESSED_LIST_PROJECTION if not q and not cat else PROCESSED_SEARCH_PROJECTION
+    list_projection = PROCESSED_LIST_PROJECTION if not q else PROCESSED_SEARCH_PROJECTION
 
-    while len(out) < page_size:
+    if not q and cat_key:
         docs = list(
             proc.find(query, list_projection)
             .sort([("processed_at", -1), ("_id", -1)])
-            .limit(batch_size)
+            .limit(max(page_size, batch_size))
         )
         last_batch_len = len(docs)
-        if not docs:
-            break
-
-        _hydrate_docs_images(docs)
-        docs = [d for d in docs if article_visible_to_users(d)]
-
-        if not q and not cat:
+        if docs:
+            _hydrate_docs_images(docs)
+            docs = [d for d in docs if article_visible_to_users(d)]
             ranked_batch = _rank_for_diversity(docs[:page_size], now, take=page_size)
             for doc in ranked_batch:
                 out.append(article_to_api_dict(doc, for_list=True))
-            last_seen_doc = docs[min(page_size, len(docs)) - 1]
-            break
+            last_seen_doc = docs[min(len(docs), page_size) - 1]
+    else:
+        while len(out) < page_size:
+            docs = list(
+                proc.find(query, list_projection)
+                .sort([("processed_at", -1), ("_id", -1)])
+                .limit(batch_size)
+            )
+            last_batch_len = len(docs)
+            if not docs:
+                break
 
-        filtered: list[dict] = []
-        for doc in docs:
-            last_seen_doc = doc
-            if not article_visible_to_users(doc):
-                continue
-            if cat_key and article_primary_browse_slug(doc) != cat_key:
-                continue
-            if q:
-                hay = _doc_haystack(doc)
-                if not _search_matches_hay(hay, q):
+            _hydrate_docs_images(docs)
+            docs = [d for d in docs if article_visible_to_users(d)]
+
+            if not q and not cat:
+                ranked_batch = _rank_for_diversity(docs[:page_size], now, take=page_size)
+                for doc in ranked_batch:
+                    out.append(article_to_api_dict(doc, for_list=True))
+                last_seen_doc = docs[min(page_size, len(docs)) - 1]
+                break
+
+            filtered: list[dict] = []
+            for doc in docs:
+                last_seen_doc = doc
+                if not article_visible_to_users(doc):
                     continue
-            filtered.append(doc)
+                if cat_key and article_primary_browse_slug(doc) != cat_key:
+                    continue
+                if q:
+                    hay = _doc_haystack(doc)
+                    if not _search_matches_hay(hay, q):
+                        continue
+                filtered.append(doc)
 
-        ranked_batch = _rank_for_diversity(filtered, now, take=page_size - len(out))
-        for doc in ranked_batch:
-            out.append(article_to_api_dict(doc, for_list=True))
+            ranked_batch = _rank_for_diversity(filtered, now, take=page_size - len(out))
+            for doc in ranked_batch:
+                out.append(article_to_api_dict(doc, for_list=True))
+                if len(out) >= page_size:
+                    break
+
             if len(out) >= page_size:
                 break
 
-        if len(out) >= page_size:
-            break
-
-        next_scan_cursor = _cursor_payload_from_doc(docs[-1])
-        if not next_scan_cursor:
-            break
-        query = _merge_query(
-            _query_after_cursor(next_scan_cursor),
-            _search_filter_clause(q),
-            user_feed_visibility_clause(),
-            _category_browse_query_clause(cat_key) if cat_key else {},
-        )
+            next_scan_cursor = _cursor_payload_from_doc(docs[-1])
+            if not next_scan_cursor:
+                break
+            query = _merge_query(
+                _query_after_cursor(next_scan_cursor),
+                _search_filter_clause(q),
+                user_feed_visibility_clause(),
+                _category_browse_query_clause(cat_key) if cat_key else {},
+            )
 
     next_cursor = _cursor_payload_from_doc(last_seen_doc or {})
     has_more = bool(next_cursor and last_batch_len >= batch_size)
