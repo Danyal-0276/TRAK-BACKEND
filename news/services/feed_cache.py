@@ -30,5 +30,25 @@ def set_cached_explore(key: str, data: dict[str, Any], *, cursor: Optional[str] 
     cache.set(key, data, timeout=ttl)
 
 
+_CATEGORY_COUNTS_KEY = "trak:feed:category_counts"
+_CATEGORY_COUNTS_TTL = 180
+
+
+def get_cached_category_counts() -> Optional[dict[str, int]]:
+    data = cache.get(_CATEGORY_COUNTS_KEY)
+    if not isinstance(data, dict):
+        return None
+    return {str(k): int(v) for k, v in data.items()}
+
+
+def set_cached_category_counts(counts: dict[str, int]) -> None:
+    cache.set(_CATEGORY_COUNTS_KEY, counts, timeout=_CATEGORY_COUNTS_TTL)
+
+
+def invalidate_category_counts_cache() -> None:
+    cache.delete(_CATEGORY_COUNTS_KEY)
+
+
 def invalidate_explore_cache() -> None:
     cache.set(_CACHE_VERSION_KEY, int(time.time()), timeout=None)
+    invalidate_category_counts_cache()

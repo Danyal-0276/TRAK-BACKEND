@@ -108,7 +108,8 @@ def _last_run_at() -> Optional[datetime]:
 def _interval_elapsed() -> bool:
     last = _last_run_at()
     if last is None:
-        return True
+        # Never auto-scrape on first API boot / missing last_run_at — use cron or admin instead.
+        return False
     return datetime.now(timezone.utc) - last >= timedelta(hours=_interval_hours())
 
 
