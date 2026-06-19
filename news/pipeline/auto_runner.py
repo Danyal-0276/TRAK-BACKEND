@@ -157,8 +157,27 @@ def _scheduled_scrape_lock_held() -> bool:
     return _lock_held("scheduled_scrape", clear_stale=True)
 
 
+def clear_stale_pipeline_cycle_lock() -> bool:
+    """Drop pipeline_cycle lock when expired or the holder process no longer exists."""
+    col = _locks_collection()
+    doc = col.find_one({"_id": _CYCLE_LOCK_ID})
+    if not doc:
+        return False
+    now = datetime.now(timezone.utc)
+    locked_until = doc.get("locked_until")
+    if locked_until and getattr(locked_until, "tzinfo", None) is None:
+        locked_until = locked_until.replace(tzinfo=timezone.utc)
+    expired = bool(locked_until and locked_until <= now)
+    holder_dead = not _holder_pid_alive(str(doc.get("holder") or ""))
+    if expired or holder_dead:
+        col.delete_one({"_id": _CYCLE_LOCK_ID})
+        return True
+    return False
+
+
 def _pipeline_cycle_lock_held() -> bool:
     """True while run_news_cycle is running in the cron/manual pipeline container."""
+    clear_stale_pipeline_cycle_lock()
     return _lock_held(_CYCLE_LOCK_ID)
 
 
