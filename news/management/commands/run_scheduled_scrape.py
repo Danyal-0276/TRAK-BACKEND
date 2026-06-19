@@ -17,7 +17,7 @@ class Command(BaseCommand):
     )
 
     def handle(self, *args, **options):
-        ran = maybe_run_scheduled_scrape(reason="cli")
+        ran = maybe_run_scheduled_scrape(reason="cli", force=True)
         if ran:
             self.stdout.write(self.style.SUCCESS("Scheduled scrape cycle finished."))
         else:

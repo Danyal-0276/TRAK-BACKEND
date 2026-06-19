@@ -22,7 +22,13 @@ from news.categorization.labels import category_slug
 from news.categorization.matching import article_browse_slugs, article_browse_slugs_with_fallback, browse_primary_only_enabled
 from news.moderation_rules import article_visible_to_users, user_feed_visibility_clause
 from news.mongo_db import processed_collection, raw_collection, reactions_collection, user_keywords_collection
-from news.services.feed_cache import explore_cache_key, get_cached_explore, set_cached_explore
+from news.services.feed_cache import (
+    explore_cache_key,
+    get_cached_category_counts,
+    get_cached_explore,
+    set_cached_category_counts,
+    set_cached_explore,
+)
 
 User = get_user_model()
 
@@ -292,12 +298,32 @@ def _category_browse_query_clause(category: str) -> dict:
     return {"$or": [{"primary_category": cat_key}, {"categories": cat_key}]}
 
 
-def get_primary_category_counts() -> dict[str, int]:
-    """Count visible processed articles per browse category (ML + rule fallback)."""
+def get_primary_category_counts(*, force_refresh: bool = False) -> dict[str, int]:
+    """Count visible processed articles per browse category (cached, ML + rule fallback)."""
+    if not force_refresh:
+        cached = get_cached_category_counts()
+        if cached is not None:
+            return cached
+
     proc = processed_collection()
-    match: dict[str, Any] = {
-        **user_feed_visibility_clause(),
-    }
+    out: dict[str, int] = {}
+    try:
+        pipeline = [
+            {
+                "$match": {
+                    **user_feed_visibility_clause(),
+                    "primary_category": {"$exists": True, "$nin": ["", None]},
+                }
+            },
+            {"$group": {"_id": "$primary_category", "n": {"$sum": 1}}},
+        ]
+        for row in proc.aggregate(pipeline):
+            slug = category_slug(row.get("_id") or "")
+            if slug:
+                out[slug] = out.get(slug, 0) + int(row.get("n") or 0)
+    except Exception:
+        out = {}
+
     projection = {
         "title": 1,
         "summary": 1,
@@ -314,12 +340,23 @@ def get_primary_category_counts() -> dict[str, int]:
         "credibility_label_name": 1,
         "moderation_status": 1,
     }
-    out: dict[str, int] = {}
-    for doc in proc.find(match, projection):
+    unlabeled_query = _merge_query(
+        user_feed_visibility_clause(),
+        {
+            "$or": [
+                {"primary_category": {"$exists": False}},
+                {"primary_category": ""},
+                {"primary_category": None},
+            ]
+        },
+    )
+    for doc in proc.find(unlabeled_query, projection):
         if not article_visible_to_users(doc):
             continue
         for slug in article_browse_slugs_with_fallback(doc):
             out[slug] = out.get(slug, 0) + 1
+
+    set_cached_category_counts(out)
     return out
 
 
@@ -770,6 +807,7 @@ def get_explore_feed_page(
         _query_after_cursor(cursor or ""),
         _search_filter_clause(q),
         user_feed_visibility_clause(),
+        _category_browse_query_clause(cat_key) if cat_key else {},
     )
 
     out: list[dict] = []
@@ -803,8 +841,6 @@ def get_explore_feed_page(
             last_seen_doc = doc
             if not article_visible_to_users(doc):
                 continue
-            if cat_key and not article_matches_category(doc, cat_key):
-                continue
             if q:
                 hay = _doc_haystack(doc)
                 if not _search_matches_hay(hay, q):
@@ -827,6 +863,7 @@ def get_explore_feed_page(
             _query_after_cursor(next_scan_cursor),
             _search_filter_clause(q),
             user_feed_visibility_clause(),
+            _category_browse_query_clause(cat_key) if cat_key else {},
         )
 
     next_cursor = _cursor_payload_from_doc(last_seen_doc or {})

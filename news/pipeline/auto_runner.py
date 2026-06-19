@@ -287,6 +287,8 @@ def _auto_loop() -> None:
             "auto pipeline loop started (on-demand + backlog check every %ss)",
             wait_seconds,
         )
+    # Brief pause so health checks pass before a heavy backlog drain on container start.
+    _wake.wait(timeout=5)
     while True:
         try:
             if on_interval:
