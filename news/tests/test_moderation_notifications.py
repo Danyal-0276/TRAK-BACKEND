@@ -21,6 +21,27 @@ class ModerationVisibilityTests(SimpleTestCase):
             article_visible_to_users({"moderation_status": "approved", "credibility_label": 2})
         )
 
+    def test_fake_label_not_visible_even_with_real_name(self):
+        self.assertFalse(
+            article_visible_to_users(
+                {
+                    "moderation_status": "approved",
+                    "credibility_label": 1,
+                    "credibility_label_name": "Real",
+                }
+            )
+        )
+
+    def test_suspicious_name_hidden_without_real_code(self):
+        self.assertFalse(
+            article_visible_to_users(
+                {
+                    "moderation_status": "approved",
+                    "credibility_label_name": "Suspicious",
+                }
+            )
+        )
+
     def test_review_hidden(self):
         self.assertFalse(article_visible_to_users({"moderation_status": "review", "credibility_label": 0}))
 

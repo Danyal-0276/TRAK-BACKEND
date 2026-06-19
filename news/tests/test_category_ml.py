@@ -135,3 +135,22 @@ class CategoryMlMatchingTests(SimpleTestCase):
             "topic_keywords": ["artificial", "smartphones"],
         }
         self.assertTrue(article_matches_category(doc, "technology"))
+
+    def test_rule_infer_categories_from_text(self):
+        from news.categorization.matching import infer_rule_categories_from_text
+
+        fields = infer_rule_categories_from_text(
+            title="Apple unveils new AI features",
+            summary="The tech giant announced software updates.",
+        )
+        self.assertEqual(fields.get("primary_category"), "technology")
+        self.assertIn("technology", fields.get("categories") or [])
+
+    def test_browse_slugs_with_rule_fallback(self):
+        from news.categorization.matching import article_browse_slugs_with_fallback
+
+        doc = {
+            "title": "Premier League results",
+            "summary": "Football match highlights from the weekend.",
+        }
+        self.assertEqual(article_browse_slugs_with_fallback(doc), {"sports"})

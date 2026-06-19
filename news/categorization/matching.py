@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 from django.conf import settings
 
 from news.categorization.embeddings import keyword_matches_embedding
@@ -54,6 +56,83 @@ def article_category_slugs(doc: dict, *, primary_only: bool = False) -> set[str]
         if slug:
             slugs.add(slug)
     return slugs
+
+
+def _legacy_category_match_score(doc: dict, slug: str, hay: str | None = None) -> int:
+    """Heuristic score for rule-based category assignment (higher = stronger match)."""
+    from news import category_matching as legacy
+
+    key = category_slug(slug)
+    if not key:
+        return 0
+    blob = hay if hay is not None else legacy.article_haystack(doc)
+    if not blob:
+        return 0
+    score = 0
+    display = key.replace("-", " ")
+    if display in blob or key in blob:
+        score += 3
+    for syn in legacy.CATEGORY_SYNONYMS.get(key, ()):
+        if legacy.legacy_term_in_hay(syn, blob):
+            score += 1
+    for sub in DEFAULT_TAGS_WITH_SUBCATEGORIES.get(key, ()):
+        sub_phrase = sub.replace("-", " ")
+        if legacy.legacy_term_in_hay(sub_phrase, blob) or legacy.legacy_term_in_hay(sub, blob):
+            score += 1
+    return score
+
+
+def infer_rule_categories_from_text(
+    *,
+    title: str = "",
+    summary: str = "",
+    clean_text: str = "",
+    topic_keywords: list | None = None,
+) -> dict[str, Any]:
+    """Rule-based category labels when the ML classifier is disabled or inconclusive."""
+    if not _rule_fallback_enabled():
+        return {}
+    doc = {
+        "title": title,
+        "summary": summary,
+        "clean_text": clean_text,
+        "topic_keywords": list(topic_keywords or []),
+    }
+    scored: list[tuple[str, int]] = []
+    for slug in main_category_slugs():
+        pts = _legacy_category_match_score(doc, slug)
+        if pts > 0:
+            scored.append((slug, pts))
+    if not scored:
+        return {}
+    scored.sort(key=lambda x: (-x[1], x[0]))
+    primary = scored[0][0]
+    categories = [slug for slug, _ in scored[:5]]
+    return {
+        "primary_category": primary,
+        "categories": categories,
+        "category_model_id": "rule-fallback",
+    }
+
+
+def article_browse_slugs_with_fallback(doc: dict) -> set[str]:
+    """Browse slugs from ML labels, or rule-based synonyms when ML fields are missing."""
+    slugs = article_browse_slugs(doc)
+    if slugs:
+        return slugs
+    if not _rule_fallback_enabled():
+        return set()
+    scored: list[tuple[str, int]] = []
+    for slug in main_category_slugs():
+        pts = _legacy_category_match_score(doc, slug)
+        if pts > 0:
+            scored.append((slug, pts))
+    if not scored:
+        return set()
+    scored.sort(key=lambda x: (-x[1], x[0]))
+    if _browse_primary_only():
+        return {scored[0][0]}
+    return {slug for slug, _ in scored}
 
 
 def article_browse_slugs(doc: dict) -> set[str]:
