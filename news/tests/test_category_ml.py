@@ -144,7 +144,18 @@ class CategoryMlMatchingTests(SimpleTestCase):
             summary="The tech giant announced software updates.",
         )
         self.assertEqual(fields.get("primary_category"), "technology")
-        self.assertIn("technology", fields.get("categories") or [])
+        self.assertEqual(fields.get("categories"), ["technology"])
+
+    def test_primary_browse_slug_one_per_article(self):
+        from news.categorization.matching import article_primary_browse_slug
+
+        doc = {
+            "title": "Fed raises rates as tech stocks rally",
+            "summary": "Business and technology markets react.",
+            "primary_category": "finance",
+            "categories": ["finance", "business", "technology"],
+        }
+        self.assertEqual(article_primary_browse_slug(doc), "finance")
 
     def test_browse_slugs_with_rule_fallback(self):
         from news.categorization.matching import article_browse_slugs_with_fallback
