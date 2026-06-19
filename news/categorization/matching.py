@@ -107,32 +107,35 @@ def infer_rule_categories_from_text(
         return {}
     scored.sort(key=lambda x: (-x[1], x[0]))
     primary = scored[0][0]
-    categories = [slug for slug, _ in scored[:5]]
     return {
         "primary_category": primary,
-        "categories": categories,
+        "categories": [primary],
         "category_model_id": "rule-fallback",
     }
 
 
-def article_browse_slugs_with_fallback(doc: dict) -> set[str]:
-    """Browse slugs from ML labels, or rule-based synonyms when ML fields are missing."""
-    slugs = article_browse_slugs(doc)
-    if slugs:
-        return slugs
+def article_primary_browse_slug(doc: dict) -> str:
+    """Single browse/count category per article (prevents one story appearing in every chip)."""
+    primary = category_slug(doc.get("primary_category") or "")
+    if primary:
+        return primary
     if not _rule_fallback_enabled():
-        return set()
+        return ""
     scored: list[tuple[str, int]] = []
     for slug in main_category_slugs():
         pts = _legacy_category_match_score(doc, slug)
         if pts > 0:
             scored.append((slug, pts))
     if not scored:
-        return set()
+        return ""
     scored.sort(key=lambda x: (-x[1], x[0]))
-    if _browse_primary_only():
-        return {scored[0][0]}
-    return {slug for slug, _ in scored}
+    return scored[0][0]
+
+
+def article_browse_slugs_with_fallback(doc: dict) -> set[str]:
+    """Browse slugs from ML labels, or rule-based synonyms when ML fields are missing."""
+    slug = article_primary_browse_slug(doc)
+    return {slug} if slug else set()
 
 
 def article_browse_slugs(doc: dict) -> set[str]:

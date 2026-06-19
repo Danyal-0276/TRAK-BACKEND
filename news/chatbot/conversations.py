@@ -134,23 +134,14 @@ def _insert_legacy_sessions(user_id: int, messages: list[dict], *, legacy_split:
 
 
 def migrate_legacy_history(user_id: int) -> None:
-    """Import legacy single-thread history as one sidebar row per user turn (once)."""
-    legacy = chatbot_history_collection().find_one({"user_id": int(user_id)}) or {}
-    if not legacy:
-        legacy = chatbot_history_collection().find_one({"user_id": str(user_id)}) or {}
-    messages = legacy.get("messages") or []
-    if not messages:
-        return
-
-    col = chatbot_conversations_collection()
-    if col.find_one({**_user_id_match(user_id), "legacy_import": True}):
-        return
-
-    _insert_legacy_sessions(user_id, messages)
-    chatbot_history_collection().update_one(
-        {"user_id": legacy.get("user_id", int(user_id))},
-        {"$set": {"messages": []}},
-    )
+    """Import any remaining legacy single-thread history as one sidebar row per user turn."""
+    for uid in (int(user_id), str(user_id)):
+        legacy = chatbot_history_collection().find_one({"user_id": uid}) or {}
+        messages = legacy.get("messages") or []
+        if not messages:
+            continue
+        _insert_legacy_sessions(user_id, messages)
+        chatbot_history_collection().update_one({"user_id": uid}, {"$set": {"messages": []}})
 
 
 def resplit_legacy_import_if_needed(user_id: int) -> None:
@@ -159,17 +150,15 @@ def resplit_legacy_import_if_needed(user_id: int) -> None:
     Split into one sidebar row per user turn so history lists every exchange.
     """
     col = chatbot_conversations_collection()
-    row = col.find_one({**_user_id_match(user_id), "legacy_import": True, "legacy_split": {"$ne": True}})
-    if not row:
-        return
-    messages = list(row.get("messages") or [])
-    if len(messages) <= 4:
-        return
-    sessions = _sessions_from_legacy_messages(messages)
-    if len(sessions) <= 1:
-        return
-    col.delete_one({"_id": row["_id"]})
-    _insert_legacy_sessions(user_id, messages, legacy_split=True)
+    rows = list(col.find({**_user_id_match(user_id), "legacy_import": True, "legacy_split": {"$ne": True}}))
+    for row in rows:
+        messages = list(row.get("messages") or [])
+        sessions = _sessions_from_legacy_messages(messages)
+        if len(sessions) <= 1:
+            col.update_one({"_id": row["_id"]}, {"$set": {"legacy_split": True}})
+            continue
+        col.delete_one({"_id": row["_id"]})
+        _insert_legacy_sessions(user_id, messages, legacy_split=True)
 
 
 def list_conversations(user_id: int) -> list[dict]:
