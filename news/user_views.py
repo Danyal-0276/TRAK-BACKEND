@@ -6,6 +6,7 @@ from rest_framework import permissions, status
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from news.moderation_rules import user_feed_visibility_clause
 from news.services import article_query
 from news.tts_service import (
     plan_article_tts_segments,
@@ -149,9 +150,9 @@ class UserBootstrapView(APIView):
                 limit=limit, search_q="", cursor=None
             )
         bookmark_rows = list(
-            bookmarks_collection().find({"user_id": user.pk}).sort("created_at", -1)
+            bookmarks_collection().find({"user_id": user.pk}).sort("created_at", -1).limit(200)
         )
-        reaction_rows = list(reactions_collection().find({"user_id": user.pk}))
+        reaction_rows = list(reactions_collection().find({"user_id": user.pk}).limit(200))
         return Response(
             {
                 "keywords": keywords,
@@ -188,17 +189,77 @@ class PlatformCategoriesView(APIView):
 
     permission_classes = [permissions.IsAuthenticated]
 
-    def get(self, _request):
+    def get(self, request):
         from news.platform_taxonomy import get_public_taxonomy
 
         payload = get_public_taxonomy()
-        raw_counts = article_query.get_primary_category_counts()
-        payload["category_counts"] = {
-            str(cat.get("slug") or "").strip(): int(raw_counts.get(str(cat.get("slug") or "").strip(), 0))
-            for cat in (payload.get("categories") or [])
-            if str(cat.get("slug") or "").strip()
+        include_counts = str(request.query_params.get("include_counts", "1")).strip().lower() not in {
+            "0",
+            "false",
+            "no",
         }
+        if include_counts:
+            try:
+                raw_counts = article_query.get_primary_category_counts(include_rule_fallback=False)
+            except Exception:
+                logger.exception("get_primary_category_counts failed")
+                raw_counts = {}
+            payload["category_counts"] = {
+                str(cat.get("slug") or "").strip(): int(raw_counts.get(str(cat.get("slug") or "").strip(), 0))
+                for cat in (payload.get("categories") or [])
+                if str(cat.get("slug") or "").strip()
+            }
+        else:
+            payload["category_counts"] = {}
         return Response(payload)
+
+
+class AboutStatsView(APIView):
+    """Public platform metrics for the About page."""
+
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, _request):
+        from news.platform_taxonomy import get_public_taxonomy
+
+        proc = processed_collection()
+        visibility = user_feed_visibility_clause()
+        article_count = proc.count_documents(visibility)
+        sources = proc.distinct("source_key", visibility)
+        source_count = len([s for s in sources if str(s or "").strip()])
+        taxonomy = get_public_taxonomy()
+        category_count = len([c for c in (taxonomy.get("categories") or []) if c.get("active", True)])
+        latest = proc.find_one(visibility, sort=[("processed_at", -1)], projection={"processed_at": 1})
+        last_updated = latest.get("processed_at") if latest else None
+        if last_updated is not None and hasattr(last_updated, "isoformat"):
+            last_updated = last_updated.isoformat()
+        return Response(
+            {
+                "article_count": article_count,
+                "source_count": source_count,
+                "category_count": category_count,
+                "last_updated": last_updated,
+                "version": "1.0.0",
+            }
+        )
+
+
+class ArticleBatchView(APIView):
+    """Fetch multiple article card payloads in one request."""
+
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request):
+        raw_ids = request.data.get("article_ids")
+        if not isinstance(raw_ids, list):
+            return Response({"detail": "article_ids must be a list."}, status=status.HTTP_400_BAD_REQUEST)
+        ids = [str(i).strip() for i in raw_ids if str(i).strip()][:50]
+        results = []
+        for aid in ids:
+            doc = article_query.get_article_by_id(aid, request.user)
+            if doc is not None:
+                results.append(doc)
+        return Response({"results": results})
 
 
 class UserKeywordsView(APIView):
@@ -744,14 +805,25 @@ class UserPreferencesView(APIView):
                 "notifications_enabled": bool(row.get("notifications_enabled", True)),
                 "dark_mode_enabled": bool(row.get("dark_mode_enabled", False)),
                 "personalization_enabled": bool(row.get("personalization_enabled", True)),
+                "language": str(row.get("language") or "").strip() or None,
+                "timezone": str(row.get("timezone") or "").strip() or None,
             }
         )
 
     def patch(self, request):
-        allowed = {"notifications_enabled", "dark_mode_enabled", "personalization_enabled"}
+        allowed = {
+            "notifications_enabled",
+            "dark_mode_enabled",
+            "personalization_enabled",
+            "language",
+            "timezone",
+        }
         updates = {}
         for key in allowed:
             if key in request.data:
+                if key in {"language", "timezone"}:
+                    updates[key] = str(request.data.get(key) or "").strip()
+                    continue
                 try:
                     updates[key] = _parse_bool(request.data.get(key), key)
                 except ValueError as exc:
@@ -765,6 +837,8 @@ class UserPreferencesView(APIView):
                 "notifications_enabled": bool(row.get("notifications_enabled", True)),
                 "dark_mode_enabled": bool(row.get("dark_mode_enabled", False)),
                 "personalization_enabled": bool(row.get("personalization_enabled", True)),
+                "language": str(row.get("language") or "").strip() or None,
+                "timezone": str(row.get("timezone") or "").strip() or None,
             }
         )
 
@@ -773,7 +847,9 @@ class BookmarkListCreateView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request):
-        rows = list(bookmarks_collection().find({"user_id": request.user.pk}).sort("created_at", -1))
+        rows = list(
+            bookmarks_collection().find({"user_id": request.user.pk}).sort("created_at", -1).limit(200)
+        )
         return Response(
             {
                 "results": [

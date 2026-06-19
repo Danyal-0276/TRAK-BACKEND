@@ -165,12 +165,13 @@ class NotificationPreferencesView(APIView):
                 "push_enabled": bool(row.get("push_enabled", True)),
                 "email_enabled": bool(row.get("email_enabled", True)),
                 "keyword_alerts": bool(row.get("keyword_alerts", True)),
+                "in_app_enabled": bool(row.get("in_app_enabled", True)),
             },
             status=status.HTTP_200_OK,
         )
 
     def patch(self, request):
-        allowed = {"push_enabled", "email_enabled", "keyword_alerts"}
+        allowed = {"push_enabled", "email_enabled", "keyword_alerts", "in_app_enabled"}
         updates = {}
         for key in allowed:
             if key in request.data:
@@ -188,6 +189,7 @@ class NotificationPreferencesView(APIView):
                 "push_enabled": bool(row.get("push_enabled", True)),
                 "email_enabled": bool(row.get("email_enabled", True)),
                 "keyword_alerts": bool(row.get("keyword_alerts", True)),
+                "in_app_enabled": bool(row.get("in_app_enabled", True)),
             },
             status=status.HTTP_200_OK,
         )

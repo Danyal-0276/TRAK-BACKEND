@@ -16,8 +16,9 @@ def _cache_version() -> int:
     return int(cache.get(_CACHE_VERSION_KEY) or 1)
 
 
-def explore_cache_key(*, limit: int, q: str, cursor: Optional[str]) -> str:
-    return f"trak:feed:explore:{_cache_version()}:{limit}:{q}:{cursor or ''}"
+def explore_cache_key(*, limit: int, q: str, cursor: Optional[str], category: str = "") -> str:
+    cat = (category or "").strip().lower()
+    return f"trak:feed:explore:{_cache_version()}:{limit}:{q}:{cat}:{cursor or ''}"
 
 
 def get_cached_explore(key: str) -> Optional[dict[str, Any]]:
@@ -31,7 +32,7 @@ def set_cached_explore(key: str, data: dict[str, Any], *, cursor: Optional[str] 
 
 
 _CATEGORY_COUNTS_KEY = "trak:feed:category_counts"
-_CATEGORY_COUNTS_TTL = 180
+_CATEGORY_COUNTS_TTL = 600
 
 
 def get_cached_category_counts() -> Optional[dict[str, int]]:

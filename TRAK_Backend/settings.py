@@ -386,10 +386,16 @@ EMAIL_HOST_USER = os.environ.get("EMAIL_HOST_USER", "")
 EMAIL_HOST_PASSWORD = os.environ.get("EMAIL_HOST_PASSWORD", "")
 EMAIL_TIMEOUT = int(os.environ.get("EMAIL_TIMEOUT", "20"))
 DEFAULT_FROM_EMAIL = os.environ.get("DEFAULT_FROM_EMAIL", "TRAK <noreply@trak.local>")
-# Resend (https://resend.com) — preferred over Gmail SMTP (no daily cap on free tier for API).
+# Keplars (https://keplars.com) — preferred for OTP (instant tier, 0–5s).
+KEPLARS_API_KEY = os.environ.get("KEPLARS_API_KEY", "").strip()
+KEPLARS_FROM_EMAIL = os.environ.get("KEPLARS_FROM_EMAIL", "").strip()
+KEPLARS_API_BASE = os.environ.get("KEPLARS_API_BASE", "https://api.keplars.com/api/v1").strip()
+# instant = OTP/password reset; async = general mail
+KEPLARS_SEND_TIER = os.environ.get("KEPLARS_SEND_TIER", "instant").strip().lower()
+# Resend (https://resend.com) — fallback when Keplars is not configured.
 RESEND_API_KEY = os.environ.get("RESEND_API_KEY", "").strip()
 RESEND_FROM_EMAIL = os.environ.get("RESEND_FROM_EMAIL", "TRAK <onboarding@resend.dev>").strip()
-# auto = Resend when RESEND_API_KEY is set, else SMTP
+# auto = Keplars → Resend → SMTP; or force keplars | resend | smtp
 EMAIL_PROVIDER = os.environ.get("EMAIL_PROVIDER", "auto").strip().lower()
 # Full URL to the web (or universal) reset screen, e.g. https://app.example.com/reset-password
 PASSWORD_RESET_FRONTEND_URL = os.environ.get(

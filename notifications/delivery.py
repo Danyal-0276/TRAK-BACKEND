@@ -32,7 +32,16 @@ def _user_by_id(user_id: Any):
 def _channels_for_user(user_id: Any, *, audience: str, ntype: str) -> dict[str, bool]:
     row = user_preferences_collection().find_one({"user_id": user_id}) or {}
     if audience == "admin" or str(ntype).startswith("admin_"):
-        return {"push": True, "email": True, "in_app": True}
+        if row.get("notifications_enabled") is False:
+            return {"push": False, "email": False, "in_app": False}
+        push = row.get("push_enabled")
+        email = row.get("email_enabled")
+        in_app = row.get("in_app_enabled")
+        return {
+            "push": push is not False,
+            "email": email is not False,
+            "in_app": in_app is not False,
+        }
     if row.get("notifications_enabled") is False:
         return {"push": False, "email": False, "in_app": False}
     push = row.get("push_enabled")
