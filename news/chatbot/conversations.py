@@ -80,10 +80,67 @@ def _serialize_conversation(row: dict, *, include_messages: bool = False) -> dic
     return payload
 
 
-def _user_id_match(user_id: int) -> dict:
-    """Match int or str user_id (older rows may differ)."""
-    uid = int(user_id)
-    return {"user_id": {"$in": [uid, str(uid)]}}
+def _user_id_variants(user_id: Any) -> list[Any]:
+    """Match int, str, or ObjectId user_id (Mongo users use ObjectId pk)."""
+    variants: list[Any] = []
+    seen: set[str] = set()
+
+    def add(value: Any) -> None:
+        if value is None:
+            return
+        key = f"{type(value).__module__}.{type(value).__name__}:{value}"
+        if key in seen:
+            return
+        seen.add(key)
+        variants.append(value)
+
+    if isinstance(user_id, ObjectId):
+        add(user_id)
+        add(str(user_id))
+        return variants
+
+    text = str(user_id or "").strip()
+    if not text:
+        return variants
+
+    add(text)
+    if text.isdigit():
+        try:
+            add(int(text))
+        except (TypeError, ValueError):
+            pass
+    try:
+        add(ObjectId(text))
+    except (InvalidId, TypeError, ValueError):
+        pass
+    return variants
+
+
+def _canonical_user_id(user_id: Any) -> Any:
+    """Value stored on new conversation rows."""
+    if isinstance(user_id, ObjectId):
+        return user_id
+    text = str(user_id or "").strip()
+    if not text:
+        return user_id
+    try:
+        return ObjectId(text)
+    except (InvalidId, TypeError, ValueError):
+        pass
+    if text.isdigit():
+        try:
+            return int(text)
+        except (TypeError, ValueError):
+            pass
+    return text
+
+
+def _user_id_match(user_id: Any) -> dict:
+    """Match int, str, or ObjectId user_id (older rows may differ)."""
+    variants = _user_id_variants(user_id)
+    if not variants:
+        return {"user_id": {"$in": []}}
+    return {"user_id": {"$in": variants}}
 
 
 def _sessions_from_legacy_messages(messages: list[dict]) -> list[list[dict]]:
@@ -108,7 +165,7 @@ def _sessions_from_legacy_messages(messages: list[dict]) -> list[list[dict]]:
     return [s for s in sessions if s]
 
 
-def _insert_legacy_sessions(user_id: int, messages: list[dict], *, legacy_split: bool = False) -> None:
+def _insert_legacy_sessions(user_id: Any, messages: list[dict], *, legacy_split: bool = False) -> None:
     col = chatbot_conversations_collection()
     sessions = _sessions_from_legacy_messages(messages)
     if not sessions:
@@ -122,7 +179,7 @@ def _insert_legacy_sessions(user_id: int, messages: list[dict], *, legacy_split:
                 break
         col.insert_one(
             {
-                "user_id": int(user_id),
+                "user_id": _canonical_user_id(user_id),
                 "title": title,
                 "messages": session[-MAX_MESSAGES_PER_CONVERSATION:],
                 "created_at": now,
@@ -133,9 +190,9 @@ def _insert_legacy_sessions(user_id: int, messages: list[dict], *, legacy_split:
         )
 
 
-def migrate_legacy_history(user_id: int) -> None:
+def migrate_legacy_history(user_id: Any) -> None:
     """Import any remaining legacy single-thread history as one sidebar row per user turn."""
-    for uid in (int(user_id), str(user_id)):
+    for uid in _user_id_variants(user_id):
         legacy = chatbot_history_collection().find_one({"user_id": uid}) or {}
         messages = legacy.get("messages") or []
         if not messages:
@@ -144,7 +201,7 @@ def migrate_legacy_history(user_id: int) -> None:
         chatbot_history_collection().update_one({"user_id": uid}, {"$set": {"messages": []}})
 
 
-def resplit_legacy_import_if_needed(user_id: int) -> None:
+def resplit_legacy_import_if_needed(user_id: Any) -> None:
     """
     Older imports stored the full legacy thread in one conversation.
     Split into one sidebar row per user turn so history lists every exchange.
@@ -161,7 +218,7 @@ def resplit_legacy_import_if_needed(user_id: int) -> None:
         _insert_legacy_sessions(user_id, messages, legacy_split=True)
 
 
-def list_conversations(user_id: int) -> list[dict]:
+def list_conversations(user_id: Any) -> list[dict]:
     migrate_legacy_history(user_id)
     resplit_legacy_import_if_needed(user_id)
     col = chatbot_conversations_collection()
@@ -173,7 +230,7 @@ def list_conversations(user_id: int) -> list[dict]:
     return [_serialize_conversation(row) for row in rows]
 
 
-def get_conversation(user_id: int, conversation_id: str) -> dict | None:
+def get_conversation(user_id: Any, conversation_id: str) -> dict | None:
     oid = _parse_oid(conversation_id)
     if not oid:
         return None
@@ -183,7 +240,7 @@ def get_conversation(user_id: int, conversation_id: str) -> dict | None:
     return _serialize_conversation(row, include_messages=True)
 
 
-def delete_conversation(user_id: int, conversation_id: str) -> bool:
+def delete_conversation(user_id: Any, conversation_id: str) -> bool:
     oid = _parse_oid(conversation_id)
     if not oid:
         return False
@@ -191,7 +248,7 @@ def delete_conversation(user_id: int, conversation_id: str) -> bool:
     return result.deleted_count > 0
 
 
-def get_prior_messages(user_id: int, conversation_id: str | None) -> tuple[list[dict], str | None]:
+def get_prior_messages(user_id: Any, conversation_id: str | None) -> tuple[list[dict], str | None]:
     """Return prior messages and resolved conversation id."""
     if not conversation_id:
         return [], None
@@ -205,7 +262,7 @@ def get_prior_messages(user_id: int, conversation_id: str | None) -> tuple[list[
 
 
 def append_conversation_exchange(
-    user_id: int,
+    user_id: Any,
     conversation_id: str | None,
     user_text: str,
     bot_text: str,
@@ -222,7 +279,7 @@ def append_conversation_exchange(
         title = _title_from_message(user_text)
         insert = col.insert_one(
             {
-                "user_id": int(user_id),
+                "user_id": _canonical_user_id(user_id),
                 "title": title,
                 "messages": [],
                 "created_at": now,
@@ -261,7 +318,7 @@ def append_conversation_exchange(
     return str(oid)
 
 
-def _trim_old_conversations(user_id: int) -> None:
+def _trim_old_conversations(user_id: Any) -> None:
     col = chatbot_conversations_collection()
     rows = list(col.find(_user_id_match(user_id), {"_id": 1}).sort([("updated_at", -1), ("_id", -1)]))
     if len(rows) <= MAX_CONVERSATIONS_PER_USER:
