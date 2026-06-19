@@ -58,7 +58,8 @@ services:
       SCRAPE_SCHEDULE_ENABLED: "false"
     entrypoint: ["python", "manage.py"]
     # Full daily cycle: scrape + pipeline (separate container — keeps heavy ML off trak-api).
-    # ~5 new articles per source module (skips/dedupes are OK); all 7 sources run every cycle.
+    # --total-limit splits ~150 new articles evenly across every admin connection (each RSS feed = Dawn share).
+    # --scrape-limit is the per-connection ceiling (API free-tier caps still apply inside each scraper).
     command:
       - run_news_cycle
       - --sources
@@ -69,8 +70,10 @@ services:
       - generic_sites
       - dunya
       - dawn
+      - --total-limit
+      - "${SCRAPE_TOTAL_LIMIT:-150}"
       - --scrape-limit
-      - "${SCRAPE_PER_SOURCE_LIMIT:-5}"
+      - "${SCRAPE_PER_SOURCE_LIMIT:-10}"
       - --workers
       - "${PIPELINE_WORKERS:-3}"
       - --requeue-stale

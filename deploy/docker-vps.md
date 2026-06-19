@@ -170,7 +170,7 @@ VITE_API_URL=https://api.yourdomain.com
 
 | Job | Who | What |
 |-----|-----|------|
-| **2 AM cron** | `pipeline` container | **Scrape + full AI pipeline** (heavy work off the API) |
+| **2 PM PKT cron** | `pipeline` container | **Scrape + full AI pipeline** (heavy work off the API) |
 | **Admin “Run scrape”** | API | Scrape → auto kicks in to process |
 | **Leftover queue / errors** | API auto | Checks every **15 min** only if backlog exists |
 | **During cron run** | API auto | **Paused** (Mongo lock — no conflict) |
@@ -186,6 +186,12 @@ SCRAPE_SCHEDULE_ENABLED=false
 
 - `PIPELINE_AUTO_ON_INTERVAL=false` — API does **not** run ML every 90s.
 - Cron container runs the **full** `run_news_cycle` (scrape + pipeline).
+- **Scrape cap:** `SCRAPE_TOTAL_LIMIT=150` (default) is split **evenly across every admin connection** — each RSS feed gets the same share as Dawn (~3–4 articles each when you have ~38 sources). API free-tier limits (`CURRENTS_API_MAX_REQUESTS_PER_RUN`, etc.) still apply inside each API scraper.
+
+```env
+SCRAPE_TOTAL_LIMIT=150
+SCRAPE_PER_SOURCE_LIMIT=10
+```
 
 ```bash
 cd ~/trak
@@ -212,11 +218,14 @@ chmod +x ~/trak/deploy/run-pipeline.sh
 crontab -e
 ```
 
-Add this line (runs every day at **02:00** server time — check with `date`):
+Add this line (runs every day at **2:00 PM Pakistan time**):
 
 ```cron
-0 2 * * * /home/shahroz/trak/deploy/run-pipeline.sh
+CRON_TZ=Asia/Karachi
+0 14 * * * /home/shahroz/trak/deploy/run-pipeline.sh
 ```
+
+(Or **2:00 AM** server time in Berlin: `0 2 * * *` without `CRON_TZ`.)
 
 The script appends to `~/trak/logs/pipeline.log` automatically (no `>>` redirect needed).
 
