@@ -30,10 +30,14 @@ def is_real_label(doc: dict[str, Any] | None) -> bool:
     if not doc:
         return False
     code = _label_int(doc)
+    if code in {1, 2}:
+        return False
+    name = str(doc.get("credibility_label_name") or "").lower()
+    if "fake" in name or "suspicious" in name:
+        return False
     if code == 0:
         return True
-    name = str(doc.get("credibility_label_name") or "").lower()
-    return name == "real"
+    return name == "real" or name.startswith("real ")
 
 
 def is_fake_or_suspicious_label(doc: dict[str, Any] | None) -> bool:
@@ -119,13 +123,8 @@ def doc_needs_review(doc: dict[str, Any] | None) -> bool:
 
 
 def real_label_clause() -> dict[str, Any]:
-    """Mongo filter: processed articles classified as Real (label 0)."""
-    return {
-        "$or": [
-            {"credibility_label": 0},
-            {"credibility_label_name": {"$regex": r"^real", "$options": "i"}},
-        ]
-    }
+    """Mongo filter: processed articles classified as Real (numeric label 0 only)."""
+    return {"credibility_label": {"$in": [0, "0"]}}
 
 
 def user_feed_visibility_clause() -> dict[str, Any]:

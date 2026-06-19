@@ -80,43 +80,107 @@ def _serialize_conversation(row: dict, *, include_messages: bool = False) -> dic
     return payload
 
 
+def _user_id_match(user_id: int) -> dict:
+    """Match int or str user_id (older rows may differ)."""
+    uid = int(user_id)
+    return {"user_id": {"$in": [uid, str(uid)]}}
+
+
+def _sessions_from_legacy_messages(messages: list[dict]) -> list[list[dict]]:
+    """Split a flat legacy transcript into one session per user turn (+ following bot replies)."""
+    sessions: list[list[dict]] = []
+    current: list[dict] = []
+    for msg in messages:
+        role = str(msg.get("role") or "").lower()
+        if role == "user":
+            if current:
+                sessions.append(current)
+            current = [msg]
+        else:
+            if current:
+                current.append(msg)
+            elif sessions:
+                sessions[-1].append(msg)
+            else:
+                current = [msg]
+    if current:
+        sessions.append(current)
+    return [s for s in sessions if s]
+
+
+def _insert_legacy_sessions(user_id: int, messages: list[dict], *, legacy_split: bool = False) -> None:
+    col = chatbot_conversations_collection()
+    sessions = _sessions_from_legacy_messages(messages)
+    if not sessions:
+        return
+    now = _now()
+    for session in sessions:
+        title = DEFAULT_TITLE
+        for msg in session:
+            if str(msg.get("role") or "") == "user" and str(msg.get("text") or "").strip():
+                title = _title_from_message(str(msg.get("text") or ""))
+                break
+        col.insert_one(
+            {
+                "user_id": int(user_id),
+                "title": title,
+                "messages": session[-MAX_MESSAGES_PER_CONVERSATION:],
+                "created_at": now,
+                "updated_at": now,
+                "legacy_import": True,
+                "legacy_split": legacy_split,
+            }
+        )
+
+
 def migrate_legacy_history(user_id: int) -> None:
-    """Import legacy single-thread history as one conversation (once)."""
-    legacy = chatbot_history_collection().find_one({"user_id": user_id}) or {}
+    """Import legacy single-thread history as one sidebar row per user turn (once)."""
+    legacy = chatbot_history_collection().find_one({"user_id": int(user_id)}) or {}
+    if not legacy:
+        legacy = chatbot_history_collection().find_one({"user_id": str(user_id)}) or {}
     messages = legacy.get("messages") or []
     if not messages:
         return
 
     col = chatbot_conversations_collection()
-    if col.find_one({"user_id": user_id, "legacy_import": True}):
+    if col.find_one({**_user_id_match(user_id), "legacy_import": True}):
         return
 
-    title = DEFAULT_TITLE
-    for msg in messages:
-        if str(msg.get("role") or "") == "user" and str(msg.get("text") or "").strip():
-            title = _title_from_message(str(msg.get("text") or ""))
-            break
-    if title == DEFAULT_TITLE:
-        title = "Previous chat"
-
-    now = _now()
-    col.insert_one(
-        {
-            "user_id": user_id,
-            "title": title,
-            "messages": messages[-MAX_MESSAGES_PER_CONVERSATION:],
-            "created_at": now,
-            "updated_at": now,
-            "legacy_import": True,
-        }
+    _insert_legacy_sessions(user_id, messages)
+    chatbot_history_collection().update_one(
+        {"user_id": legacy.get("user_id", int(user_id))},
+        {"$set": {"messages": []}},
     )
-    chatbot_history_collection().update_one({"user_id": user_id}, {"$set": {"messages": []}})
+
+
+def resplit_legacy_import_if_needed(user_id: int) -> None:
+    """
+    Older imports stored the full legacy thread in one conversation.
+    Split into one sidebar row per user turn so history lists every exchange.
+    """
+    col = chatbot_conversations_collection()
+    row = col.find_one({**_user_id_match(user_id), "legacy_import": True, "legacy_split": {"$ne": True}})
+    if not row:
+        return
+    messages = list(row.get("messages") or [])
+    if len(messages) <= 4:
+        return
+    sessions = _sessions_from_legacy_messages(messages)
+    if len(sessions) <= 1:
+        return
+    col.delete_one({"_id": row["_id"]})
+    _insert_legacy_sessions(user_id, messages, legacy_split=True)
 
 
 def list_conversations(user_id: int) -> list[dict]:
     migrate_legacy_history(user_id)
+    resplit_legacy_import_if_needed(user_id)
     col = chatbot_conversations_collection()
-    rows = col.find({"user_id": user_id}).sort("updated_at", -1).limit(MAX_CONVERSATIONS_PER_USER)
+    rows = (
+        col.find(_user_id_match(user_id))
+        .sort([("updated_at", -1), ("_id", -1)])
+        .limit(MAX_CONVERSATIONS_PER_USER)
+    )
     return [_serialize_conversation(row) for row in rows]
 
 
@@ -124,7 +188,7 @@ def get_conversation(user_id: int, conversation_id: str) -> dict | None:
     oid = _parse_oid(conversation_id)
     if not oid:
         return None
-    row = chatbot_conversations_collection().find_one({"_id": oid, "user_id": user_id})
+    row = chatbot_conversations_collection().find_one({"_id": oid, **_user_id_match(user_id)})
     if not row:
         return None
     return _serialize_conversation(row, include_messages=True)
@@ -134,7 +198,7 @@ def delete_conversation(user_id: int, conversation_id: str) -> bool:
     oid = _parse_oid(conversation_id)
     if not oid:
         return False
-    result = chatbot_conversations_collection().delete_one({"_id": oid, "user_id": user_id})
+    result = chatbot_conversations_collection().delete_one({"_id": oid, **_user_id_match(user_id)})
     return result.deleted_count > 0
 
 
@@ -145,7 +209,7 @@ def get_prior_messages(user_id: int, conversation_id: str | None) -> tuple[list[
     oid = _parse_oid(conversation_id)
     if not oid:
         return [], None
-    row = chatbot_conversations_collection().find_one({"_id": oid, "user_id": user_id})
+    row = chatbot_conversations_collection().find_one({"_id": oid, **_user_id_match(user_id)})
     if not row:
         return [], None
     return list(row.get("messages") or []), str(row.get("_id"))
@@ -163,13 +227,13 @@ def append_conversation_exchange(
     col = chatbot_conversations_collection()
     now = _now()
     oid = _parse_oid(conversation_id) if conversation_id else None
-    row = col.find_one({"_id": oid, "user_id": user_id}) if oid else None
+    row = col.find_one({"_id": oid, **_user_id_match(user_id)}) if oid else None
 
     if not row:
         title = _title_from_message(user_text)
         insert = col.insert_one(
             {
-                "user_id": user_id,
+                "user_id": int(user_id),
                 "title": title,
                 "messages": [],
                 "created_at": now,
@@ -210,12 +274,12 @@ def append_conversation_exchange(
 
 def _trim_old_conversations(user_id: int) -> None:
     col = chatbot_conversations_collection()
-    rows = list(col.find({"user_id": user_id}, {"_id": 1}).sort("updated_at", -1))
+    rows = list(col.find(_user_id_match(user_id), {"_id": 1}).sort([("updated_at", -1), ("_id", -1)]))
     if len(rows) <= MAX_CONVERSATIONS_PER_USER:
         return
     stale_ids = [row["_id"] for row in rows[MAX_CONVERSATIONS_PER_USER :]]
     if stale_ids:
-        col.delete_many({"_id": {"$in": stale_ids}, "user_id": user_id})
+        col.delete_many({"_id": {"$in": stale_ids}, **_user_id_match(user_id)})
 
 
 def _parse_oid(value: str | None) -> ObjectId | None:

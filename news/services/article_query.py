@@ -19,7 +19,7 @@ from news.category_matching import (
     user_follows_all_categories,
 )
 from news.categorization.labels import category_slug
-from news.categorization.matching import article_browse_slugs, browse_primary_only_enabled
+from news.categorization.matching import article_browse_slugs, article_browse_slugs_with_fallback, browse_primary_only_enabled
 from news.moderation_rules import article_visible_to_users, user_feed_visibility_clause
 from news.mongo_db import processed_collection, raw_collection, reactions_collection, user_keywords_collection
 from news.services.feed_cache import explore_cache_key, get_cached_explore, set_cached_explore
@@ -191,6 +191,9 @@ def article_to_api_dict(doc: dict, *, for_list: bool = False) -> dict:
         "primary_category": doc.get("primary_category") or "",
         "categories": list(doc.get("categories") or []),
         "category_confidence": doc.get("category_confidence"),
+        "credibility_label": label,
+        "credibility_label_name": doc.get("credibility_label_name")
+        or (labels_map.get(label, labels_map.get(str(label))) if isinstance(labels_map, dict) else None),
         "image_url": article_image_url(doc),
         "like_count": 0,
         "dislike_count": 0,
@@ -290,14 +293,23 @@ def _category_browse_query_clause(category: str) -> dict:
 
 
 def get_primary_category_counts() -> dict[str, int]:
-    """Count visible processed articles per browse category (primary category only)."""
+    """Count visible processed articles per browse category (ML + rule fallback)."""
     proc = processed_collection()
     match: dict[str, Any] = {
         **user_feed_visibility_clause(),
-        "primary_category": {"$exists": True, "$nin": ["", None]},
     }
     projection = {
+        "title": 1,
+        "summary": 1,
+        "clean_text": 1,
+        "normalized_text": 1,
+        "source_key": 1,
+        "topic_keywords": 1,
+        "normalized_terms": 1,
+        "entities": 1,
         "primary_category": 1,
+        "categories": 1,
+        "category_scores": 1,
         "credibility_label": 1,
         "credibility_label_name": 1,
         "moderation_status": 1,
@@ -306,8 +318,7 @@ def get_primary_category_counts() -> dict[str, int]:
     for doc in proc.find(match, projection):
         if not article_visible_to_users(doc):
             continue
-        slug = category_slug(doc.get("primary_category") or "")
-        if slug:
+        for slug in article_browse_slugs_with_fallback(doc):
             out[slug] = out.get(slug, 0) + 1
     return out
 
@@ -751,20 +762,14 @@ def get_explore_feed_page(
 
     proc = processed_collection()
     batch_size = _feed_batch_size(page_size)
+    cat_key = category_slug(cat) if cat else ""
     category_total = None
-    if cat and not cursor:
-        category_total = proc.count_documents(
-            _merge_query(
-                _search_filter_clause(q),
-                user_feed_visibility_clause(),
-                _category_browse_query_clause(cat),
-            )
-        )
+    if cat_key and not cursor:
+        category_total = get_primary_category_counts().get(cat_key, 0)
     query = _merge_query(
         _query_after_cursor(cursor or ""),
         _search_filter_clause(q),
         user_feed_visibility_clause(),
-        _category_browse_query_clause(cat),
     )
 
     out: list[dict] = []
@@ -798,8 +803,8 @@ def get_explore_feed_page(
             last_seen_doc = doc
             if not article_visible_to_users(doc):
                 continue
-            # Category is already constrained in the Mongo query; re-applying ML slug
-            # rules here caused empty browse previews while category_counts stayed high.
+            if cat_key and not article_matches_category(doc, cat_key):
+                continue
             if q:
                 hay = _doc_haystack(doc)
                 if not _search_matches_hay(hay, q):
@@ -822,7 +827,6 @@ def get_explore_feed_page(
             _query_after_cursor(next_scan_cursor),
             _search_filter_clause(q),
             user_feed_visibility_clause(),
-            _category_browse_query_clause(cat),
         )
 
     next_cursor = _cursor_payload_from_doc(last_seen_doc or {})

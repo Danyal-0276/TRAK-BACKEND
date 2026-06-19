@@ -9,6 +9,7 @@ from news.categorization.embeddings import (
     embedding_model_id,
 )
 from news.categorization.inference import predict_categories
+from news.categorization.matching import infer_rule_categories_from_text
 
 
 def enrich_article_ml_fields(
@@ -22,6 +23,14 @@ def enrich_article_ml_fields(
     Safe to call when models are disabled/unavailable (returns empty fields).
     """
     cat = predict_categories(title=title, summary=summary, clean_text=clean_text)
+    if not cat.get("primary_category"):
+        rule_cat = infer_rule_categories_from_text(
+            title=title,
+            summary=summary,
+            clean_text=clean_text,
+        )
+        if rule_cat.get("primary_category"):
+            cat = {**cat, **rule_cat}
     embedding = embed_article(title=title, summary=summary, clean_text=clean_text)
 
     out: dict[str, Any] = {

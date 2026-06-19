@@ -83,6 +83,11 @@ def combine_credibility(
     cred_score = compute_credibility_score_from_doc(
         {"credibility_label": final_label, "credibility_probs": final_probs, "credibility_max_prob": final_max}
     )
+    label_name = ""
+    if isinstance(labels_map, dict):
+        label_name = str(labels_map.get(final_label, labels_map.get(str(final_label), "")) or "")
+    if not label_name:
+        label_name = _DEFAULT_ID2LABEL.get(int(final_label), "")
 
     return {
         "fake_detection_label": ml_label,
@@ -92,6 +97,7 @@ def combine_credibility(
         "fake_detection_labels_map": _mongo_safe_labels_map(labels_map),
         **fact_check,
         "credibility_label": final_label,
+        "credibility_label_name": label_name,
         "credibility_probs": final_probs,
         "credibility_max_prob": final_max,
         "credibility_score": cred_score,
