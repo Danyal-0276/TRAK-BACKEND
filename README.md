@@ -1,6 +1,6 @@
 # TRAK Backend
 
-**Truth & Realtime Alert Keeper** — Django REST API and AI pipeline for the TRAK news platform. Scrapes sources, scores credibility via Hugging Face models, enriches articles, and serves personalized feeds to mobile and web clients.
+**Truth & Realtime Alert Keeper** - Django REST API and AI pipeline for the TRAK news platform. Scrapes sources, scores credibility via Hugging Face models, enriches articles, and serves personalized feeds to mobile and web clients.
 
 **Frontend:** [Danyal-0276/TRAK](https://github.com/Danyal-0276/TRAK)
 
